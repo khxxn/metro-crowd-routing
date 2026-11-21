@@ -11,6 +11,7 @@
 // API
 //   GET /api/graph                                   → 노선도 그리기용 역·구간 목록
 //   GET /api/route?from=교대&to=강동&day=weekday&time=18:00 → 최단 시간 경로(f)와 혼잡 반영 경로(c)
+//   algorithm=dijkstra(기본값), astar, ga로 탐색 알고리즘 선택
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -21,6 +22,7 @@
 #include <fstream>
 #include <iostream>
 #include <queue>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -186,6 +188,7 @@ struct Step { int type; int from, to; double real, score, cong; };   // type 1 =
 struct Result {
     bool found = false;
     bool no_train = false;
+    bool search_limited = false;  // GA가 탐색 예산 안에서 유효 경로를 찾지 못한 경우
     int origin_last = -1;
     double score = 0, real = 0;
     vector<int> path;
@@ -252,6 +255,267 @@ Result route(const Data& D, const string& from, const string& to, int day, int d
     }
     Result none; none.no_train = no_train; none.origin_last = origin_last;
     return none;
+}
+
+// ---------- A* (기존 route()와 같은 입력·비용식·결과 형식) ----------
+// h: 혼잡 가산·운행 제한을 제외한 이동시간 + 해당 요일의 최소 환승 비용.
+// 역방향 그래프에서 목적지까지의 하한을 구해, 남은 비용을 과대평가하지 않는다.
+// 기존 route()처럼 역마다 후보 하나를 유지하므로 시간 의존 비용의 최적성 한계도 같다.
+Result route_astar(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
+    int n = (int)D.id.size();
+    using P = pair<double, int>;
+    vector<vector<P>> reverse_edges(n);  // {비용 하한, 이전 역}
+    for (int u = 0; u < n; u++) {
+        for (const auto& e : D.ride[u]) reverse_edges[e.to].push_back({(double)e.sec, u});
+        for (const auto& e : D.tr[u]) {
+            double lower = 1e18;
+            for (const TrVal& v : D.trv[e.e][day])
+                if (v.ok) lower = min(lower, by_real ? v.walk + v.wait : v.cost);
+            if (lower < 1e18) reverse_edges[e.to].push_back({lower, u});
+        }
+    }
+
+    vector<double> h(n, 1e18);
+    vector<char> is_dst(n, 0);
+    priority_queue<P, vector<P>, greater<P>> hpq;
+    for (int d : D.by_name.at(to)) { is_dst[d] = 1; h[d] = 0; hpq.push({0, d}); }
+    while (!hpq.empty()) {
+        auto [d, u] = hpq.top(); hpq.pop();
+        if (d > h[u]) continue;
+        for (const auto& [w, v] : reverse_edges[u]) {
+            if (d + w < h[v]) { h[v] = d + w; hpq.push({h[v], v}); }
+        }
+    }
+
+    vector<double> key(n, 1e18), real(n, 0), sco(n, 0), s_real(n, 0), s_score(n, 0), s_cong(n, 0);
+    vector<int> prev(n, -1);
+    vector<char> by_ride(n, 0), s_type(n, 0);
+    bool no_train = false; int origin_last = -1;
+    using Q = pair<double, P>;  // {g + h, {g, 역}}; 실제 누적 비용 g로 오래된 항목을 검사한다.
+    priority_queue<Q, vector<Q>, greater<Q>> pq;
+    for (int s : D.by_name.at(from)) { key[s] = 0; pq.push({h[s], {0, s}}); }
+
+    while (!pq.empty()) {
+        auto [d, u] = pq.top().second; pq.pop();
+        if (d > key[u]) continue;
+        if (is_dst[u]) {
+            Result r; r.found = true; r.score = sco[u]; r.real = real[u];
+            for (int x = u; x != -1; x = prev[x]) r.path.push_back(x);
+            reverse(r.path.begin(), r.path.end());
+            for (size_t i = 1; i < r.path.size(); i++) {
+                int x = r.path[i];
+                r.steps.push_back({s_type[x], r.path[i - 1], x, s_real[x], s_score[x], s_cong[x]});
+            }
+            return r;
+        }
+        int now = depart_sec + (int)real[u];
+        int slot = slot_of(now);
+        for (const auto& e : D.ride[u]) {
+            if (!by_ride[u]) {
+                int t = clock_of(now);
+                if (t < e.first[day] || t > e.last[day]) {
+                    no_train = true;
+                    if (key[u] == 0 && t > e.last[day]) origin_last = max(origin_last, e.last[day]);
+                    continue;
+                }
+            }
+            double c = D.cong[e.e][day][slot];
+            double ds = ride_cost(e.sec, c), dr = e.sec;
+            double w = by_real ? dr : ds;
+            if (d + w < key[e.to]) {
+                key[e.to] = d + w; real[e.to] = real[u] + dr; sco[e.to] = sco[u] + ds; prev[e.to] = u; by_ride[e.to] = 1;
+                s_type[e.to] = 1; s_real[e.to] = dr; s_score[e.to] = ds; s_cong[e.to] = c;
+                pq.push({key[e.to] + h[e.to], {key[e.to], e.to}});
+            }
+        }
+        for (const auto& e : D.tr[u]) {
+            const TrVal& v = D.trv[e.e][day][slot];
+            if (!v.ok) { no_train = true; continue; }
+            double ds = v.cost, dr = v.walk + v.wait;
+            double w = by_real ? dr : ds;
+            if (d + w < key[e.to]) {
+                key[e.to] = d + w; real[e.to] = real[u] + dr; sco[e.to] = sco[u] + ds; prev[e.to] = u; by_ride[e.to] = 0;
+                s_type[e.to] = 0; s_real[e.to] = dr; s_score[e.to] = ds; s_cong[e.to] = 0;
+                pq.push({key[e.to] + h[e.to], {key[e.to], e.to}});
+            }
+        }
+    }
+    Result none; none.no_train = no_train; none.origin_last = origin_last;
+    return none;
+}
+
+// ---------- GA (경로를 염색체로 사용하는 유전 알고리즘) ----------
+// 적합도는 기존과 동일하게 by_real ? real : score를 최소화한다. 별도 혼잡 계수나 벌점은 없다.
+// 연결·운행 조건이 유효한 경로만 사용하며, 다익스트라/A*의 경로를 제외하거나 초기해로 쓰지 않는다.
+Result route_ga(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
+    constexpr int POPULATION = 32, GENERATIONS = 40, SEARCH_BUDGET = 4000;
+    constexpr double CROSSOVER_RATE = 0.8, MUTATION_RATE = 0.3;
+    mt19937 rng(20261121u);  // 같은 입력의 실험을 재현할 수 있도록 시드를 고정한다.
+    auto random_index = [&](int count) { return uniform_int_distribution<int>(0, count - 1)(rng); };
+    auto chance = [&](double p) { return bernoulli_distribution(p)(rng); };
+    int n = (int)D.id.size();
+    const auto& origins = D.by_name.at(from);
+    vector<char> is_dst(n, 0);
+    for (int d : D.by_name.at(to)) is_dst[d] = 1;
+    for (int s : origins) {
+        if (is_dst[s]) { Result r; r.found = true; r.path.push_back(s); return r; }
+    }
+
+    struct Gene { int from, to, type, index; };  // index는 해당 역의 ride/tr 목록 내 위치
+    struct Individual { vector<Gene> genes; Result result; };
+    vector<vector<Gene>> edges(n);
+    vector<vector<int>> reverse_edges(n);
+    for (int u = 0; u < n; u++) {
+        for (int i = 0; i < (int)D.ride[u].size(); i++) edges[u].push_back({u, D.ride[u][i].to, 1, i});
+        for (int i = 0; i < (int)D.tr[u].size(); i++) edges[u].push_back({u, D.tr[u][i].to, 0, i});
+        for (const auto& e : edges[u]) reverse_edges[e.to].push_back(u);
+    }
+    // 초기 경로/돌연변이 생성 시 목적지와 연결되지 않은 가지는 방문하지 않는다.
+    vector<int> hops(n, -1);
+    queue<int> pending;
+    for (int d : D.by_name.at(to)) { hops[d] = 0; pending.push(d); }
+    while (!pending.empty()) {
+        int u = pending.front(); pending.pop();
+        for (int v : reverse_edges[u]) if (hops[v] < 0) { hops[v] = hops[u] + 1; pending.push(v); }
+    }
+
+    bool no_train = false, search_limited = false;
+    int origin_last = -1;
+    auto advance = [&](const Gene& g, double elapsed, bool aboard, Step& step) {
+        int now = depart_sec + (int)elapsed, slot = slot_of(now);
+        if (g.type == 1) {
+            const auto& e = D.ride[g.from][g.index];
+            if (!aboard) {
+                int t = clock_of(now);
+                if (t < e.first[day] || t > e.last[day]) {
+                    no_train = true;
+                    if (elapsed == 0 && t > e.last[day]) origin_last = max(origin_last, e.last[day]);
+                    return false;
+                }
+            }
+            double c = D.cong[e.e][day][slot];
+            step = {1, g.from, g.to, (double)e.sec, ride_cost(e.sec, c), c};
+        } else {
+            const auto& e = D.tr[g.from][g.index];
+            const TrVal& v = D.trv[e.e][day][slot];
+            if (!v.ok) { no_train = true; return false; }
+            step = {0, g.from, g.to, v.walk + v.wait, v.cost, 0};
+        }
+        return true;
+    };
+    // 교차·돌연변이 후에도 처음부터 시각을 진행하며 모든 구간의 비용을 다시 평가한다.
+    auto evaluate = [&](int start, const vector<Gene>& genes) {
+        Individual child; child.genes = genes;
+        Result& r = child.result;
+        r.path.push_back(start);
+        vector<char> seen(n, 0); seen[start] = 1;
+        bool aboard = false;
+        for (const auto& g : genes) {
+            Step step;
+            if (g.from != r.path.back() || seen[g.to] || is_dst[g.from] || !advance(g, r.real, aboard, step)) return Individual{};
+            r.path.push_back(g.to); r.steps.push_back(step);
+            r.real += step.real; r.score += step.score;
+            seen[g.to] = 1; aboard = g.type == 1;
+        }
+        r.found = is_dst[r.path.back()];
+        return child;
+    };
+    // 유효한 접두 경로 뒤를 무작위 DFS로 생성한다. 무한 탐색을 막기 위해 확장 횟수를 제한한다.
+    auto grow = [&](int start, const vector<Gene>& prefix) {
+        Individual child = evaluate(start, prefix);
+        Result& r = child.result;
+        if (r.path.empty() || hops[r.path.back()] < 0) return Individual{};
+        vector<char> seen(n, 0);
+        for (int u : r.path) seen[u] = 1;
+        int remaining = SEARCH_BUDGET;
+        auto visit = [&](auto&& self, int u, bool aboard) -> bool {
+            if (is_dst[u]) return true;
+            if (remaining-- <= 0) { search_limited = true; return false; }
+            auto choices = edges[u];
+            shuffle(choices.begin(), choices.end(), rng);
+            if (chance(0.7)) stable_sort(choices.begin(), choices.end(), [&](const Gene& a, const Gene& b) { return hops[a.to] < hops[b.to]; });
+            for (const auto& g : choices) {
+                if (seen[g.to] || hops[g.to] < 0) continue;
+                Step step;
+                if (!advance(g, r.real, aboard, step)) continue;
+                double old_real = r.real, old_score = r.score;
+                child.genes.push_back(g); r.path.push_back(g.to); r.steps.push_back(step);
+                r.real += step.real; r.score += step.score; seen[g.to] = 1;
+                if (self(self, g.to, g.type == 1)) return true;
+                seen[g.to] = 0; r.real = old_real; r.score = old_score;
+                child.genes.pop_back(); r.path.pop_back(); r.steps.pop_back();
+                if (remaining <= 0) { search_limited = true; break; }
+            }
+            return false;
+        };
+        r.found = visit(visit, r.path.back(), !r.steps.empty() && r.steps.back().type == 1);
+        return r.found ? child : Individual{};
+    };
+    // 공통 역에서 교차한 결과에 순환이 생기면 해당 순환 구간을 제거한다.
+    auto repair = [&](int start, const vector<Gene>& genes) {
+        vector<Gene> clean;
+        vector<int> position(n, -1); position[start] = 0;
+        for (const auto& g : genes) {
+            int cut = position[g.to];
+            if (cut < 0) { clean.push_back(g); position[g.to] = (int)clean.size(); }
+            else while ((int)clean.size() > cut) { position[clean.back().to] = -1; clean.pop_back(); }
+        }
+        return clean;
+    };
+    auto better = [&](const Individual& a, const Individual& b) {
+        return by_real ? a.result.real < b.result.real : a.result.score < b.result.score;
+    };
+
+    vector<Individual> population;
+    for (int attempt = 0; attempt < POPULATION * 4 && (int)population.size() < POPULATION; attempt++) {
+        Individual child = grow(origins[attempt % origins.size()], {});
+        if (child.result.found) population.push_back(move(child));
+    }
+    if (population.empty()) {
+        Result none; none.no_train = no_train; none.origin_last = origin_last; none.search_limited = search_limited;
+        return none;
+    }
+    while ((int)population.size() < POPULATION) { Individual copy = population[random_index((int)population.size())]; population.push_back(move(copy)); }
+
+    for (int generation = 0; generation < GENERATIONS; generation++) {
+        stable_sort(population.begin(), population.end(), better);
+        vector<Individual> next{population[0], population[1]};  // 가장 좋은 개체 2개 보존
+        auto select = [&]() -> const Individual& {  // 개체 3개의 토너먼트 선택
+            int best = random_index(POPULATION);
+            for (int i = 0; i < 2; i++) { int j = random_index(POPULATION); if (better(population[j], population[best])) best = j; }
+            return population[best];
+        };
+        while ((int)next.size() < POPULATION) {
+            const Individual& a = select();
+            Individual child = a;
+            if (chance(CROSSOVER_RATE)) {
+                const Individual& b = select();
+                vector<int> position(n, -1);
+                for (int j = 1; j + 1 < (int)b.result.path.size(); j++) position[b.result.path[j]] = j;
+                vector<pair<int, int>> cuts;
+                for (int i = 1; i + 1 < (int)a.result.path.size(); i++) {
+                    int j = position[a.result.path[i]];
+                    if (j >= 0) cuts.push_back({i, j});
+                }
+                if (!cuts.empty()) {
+                    auto [i, j] = cuts[random_index((int)cuts.size())];
+                    vector<Gene> genes(a.genes.begin(), a.genes.begin() + i);
+                    genes.insert(genes.end(), b.genes.begin() + j, b.genes.end());
+                    Individual crossed = evaluate(a.result.path.front(), repair(a.result.path.front(), genes));
+                    if (crossed.result.found) child = move(crossed);
+                }
+            }
+            if (!child.genes.empty() && chance(MUTATION_RATE)) {
+                int cut = random_index((int)child.genes.size());
+                vector<Gene> prefix(child.genes.begin(), child.genes.begin() + cut);
+                Individual mutant = grow(child.result.path.front(), prefix);
+                if (mutant.result.found) child = move(mutant);
+            }
+            next.push_back(move(child));
+        }
+        population = move(next);
+    }
+    return min_element(population.begin(), population.end(), better)->result;
 }
 
 // ---------- JSON ----------
@@ -353,14 +617,17 @@ string handle(const App& A, const string& req, string& log) {
         if (ts.size() != 5 || ts[2] != ':' || !isdigit((unsigned char)ts[0]) || !isdigit((unsigned char)ts[1]) || !isdigit((unsigned char)ts[3]) || !isdigit((unsigned char)ts[4])) return bad("time은 HH:MM 형식");
         int hh = stoi(ts.substr(0, 2)), mm = stoi(ts.substr(3, 2));
         if (hh > 23 || mm > 59) return bad("time 범위 오류");
+        const string algorithm = q.count("algorithm") ? q["algorithm"] : "dijkstra";
+        if (algorithm != "dijkstra" && algorithm != "astar" && algorithm != "ga") return bad("algorithm은 dijkstra, astar, ga 중 하나");
+        auto run_route = algorithm == "ga" ? route_ga : algorithm == "astar" ? route_astar : route;
         int day = day_of(ds), t = hh * 3600 + mm * 60;
-        Result f = route(A.D, from, to, day, t, true), c = route(A.D, from, to, day, t, false);
+        Result f = run_route(A.D, from, to, day, t, true), c = run_route(A.D, from, to, day, t, false);
         string body;
         if (!f.found || !c.found) {
             const Result& x = c.found ? f : c;
-            body = string("{\"ok\":false,\"noTrain\":") + (x.no_train ? "true" : "false") + ",\"originLast\":" + to_string(x.origin_last) + "}";
+            body = string("{\"ok\":false,\"algorithm\":") + jstr(algorithm) + ",\"noTrain\":" + (x.no_train ? "true" : "false") + ",\"originLast\":" + to_string(x.origin_last) + ",\"searchLimited\":" + (x.search_limited ? "true" : "false") + "}";
         } else {
-            body = "{\"ok\":true,\"same\":" + string(f.path == c.path ? "true" : "false") + ",\"f\":" + json_result(f) + ",\"c\":" + json_result(c) + "}";
+            body = "{\"ok\":true,\"algorithm\":" + jstr(algorithm) + ",\"same\":" + string(f.path == c.path ? "true" : "false") + ",\"f\":" + json_result(f) + ",\"c\":" + json_result(c) + "}";
         }
         return response(200, "OK", JSON_T, body, head);
     }

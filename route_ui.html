@@ -93,6 +93,9 @@ h1 { margin: 0; font-size: 19px; line-height: 1.3; font-weight: 700; letter-spac
 .seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
 .seg label:has(input:checked) { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.algorithm { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: center; color: var(--fg-2); }
+.algorithm .seg { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.algorithm .seg label { font-size: 14px; padding: 8px 4px; }
 .time { height: 38px; padding: 0 10px; background: var(--panel-2); border: 1px solid var(--hair); border-radius: 10px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 142px; }
 .note { margin: 0; font-size: 12.5px; color: var(--fg-2); }
 .note b { color: var(--fg); font-weight: 600; }
@@ -163,6 +166,7 @@ details p { margin: 6px 0 0; }
   #stage { order: 1; }
   #panel { order: 2; max-height: 56vh; border-right: 0; border-top: 1px solid var(--hair); gap: 14px; padding-block: 14px 22px; }
   h1 { font-size: 17px; }
+  .algorithm { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .legend { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -205,6 +209,14 @@ details p { margin: 6px 0 0; }
         <input id="time" class="time" type="time" value="18:00" step="300">
       </div>
     </section>
+    <section class="algorithm" id="algorithmControls" aria-label="탐색 알고리즘">
+      <span id="algorithmLabel">탐색 알고리즘</span>
+      <div class="seg" role="radiogroup" aria-labelledby="algorithmLabel">
+        <label><input type="radio" name="algorithm" value="dijkstra" checked>다익스트라</label>
+        <label><input type="radio" name="algorithm" value="astar">A*</label>
+        <label><input type="radio" name="algorithm" value="ga">GA</label>
+      </div>
+    </section>
     <p class="note" id="note"></p>
 
     <section id="result" aria-live="polite"></section>
@@ -220,7 +232,7 @@ details p { margin: 6px 0 0; }
     <canvas id="map" role="img" aria-label="서울 지하철 노선도. 역을 눌러 출발역과 도착역을 고릅니다."></canvas>
     <div class="pill" id="pill"><span class="pin" id="pillPin" aria-hidden="true"></span><span id="pillText"></span></div>
     <div class="legend" id="legend" hidden>
-      <div class="row"><span class="dash" aria-hidden="true"></span>최단 시간 경로</div>
+      <div class="row"><span class="dash" aria-hidden="true"></span><span id="fastLegendLabel">최단 시간 경로</span></div>
       <div>
         <div class="row">혼잡 반영 경로 · 탑승 구간 혼잡도</div>
         <div class="row" style="margin-top:4px"><span class="ramp" id="legRamp"></span></div>
@@ -248,6 +260,7 @@ const DATA = null;
   /* 계산 방식: 'local' = 이 페이지 안의 JS(서버 없이 열림), 'server' = C++ route_server에 /api로 요청 */
   const MODE = 'server';
   const DAYS = ['weekday', 'sat', 'sun'];
+  const ALGORITHMS = { dijkstra: '다익스트라', astar: 'A*', ga: 'GA' };
   let D, solve; const edgeList = [];
   if (MODE === 'server') {
     const g = await (await fetch('api/graph')).json();
@@ -260,19 +273,21 @@ const DATA = null;
     g.edges.forEach((e) => edgeList.push(e));
     const toRoute = (r) => ({ found: true, real: r.real, score: r.score, path: r.path,
       steps: r.steps.map((s) => ({ type: s[0] ? 'ride' : 'transfer', from: s[1], to: s[2], real: s[3], score: s[4], cong: s[5] })) });
-    solve = async (from, to, day, time) => {
+    solve = async (from, to, day, time, algorithm) => {
       const hhmm = String(Math.floor(time / 3600)).padStart(2, '0') + ':' + String(Math.floor(time % 3600 / 60)).padStart(2, '0');
-      const res = await fetch(`api/route?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&day=${DAYS[day]}&time=${hhmm}`);
+      const res = await fetch(`api/route?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&day=${DAYS[day]}&time=${hhmm}&algorithm=${encodeURIComponent(algorithm)}`);
       const j = await res.json();
-      if (!j.ok) { const x = { found: false, noTrain: !!j.noTrain, originLast: j.originLast == null ? -1 : j.originLast }; return { f: x, c: x }; }
-      return { f: toRoute(j.f), c: toRoute(j.c) };
+      if (!res.ok) throw new Error(j.error || '경로 계산 요청 실패');
+      if (!j.ok) { const x = { found: false, noTrain: !!j.noTrain, originLast: j.originLast == null ? -1 : j.originLast, searchLimited: !!j.searchLimited }; return { f: x, c: x, algorithm: j.algorithm }; }
+      return { f: toRoute(j.f), c: toRoute(j.c), algorithm: j.algorithm };
     };
   } else {
     D = Router.load(DATA);
     D.ride.forEach((list, u) => list.forEach((e) => edgeList.push([u, e.to])));
-    solve = async (from, to, day, time) => ({ f: Router.route(D, from, to, day, time, true), c: Router.route(D, from, to, day, time, false) });
+    solve = async (from, to, day, time) => ({ f: Router.route(D, from, to, day, time, true), c: Router.route(D, from, to, day, time, false), algorithm: 'dijkstra' });
   }
   const $ = (s) => document.querySelector(s);
+  if (MODE !== 'server') $('#algorithmControls').remove();
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const pad2 = (n) => String(n).padStart(2, '0');
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -315,7 +330,7 @@ const DATA = null;
   const rampCss = (c) => `rgb(${rampRgb(c).join(',')})`;
 
   /* ---------- 상태 ---------- */
-  const state = { from: '교대', to: '강동', day: 0, time: 18 * 3600, active: null, focus: null, res: null, hover: null, example: true };
+  const state = { from: '교대', to: '강동', day: 0, time: 18 * 3600, algorithm: 'dijkstra', active: null, focus: null, res: null, hover: null, example: true };
 
   /* ---------- 캔버스·뷰 ---------- */
   const stage = $('#stage'), cv = $('#map'), ctx = cv.getContext('2d');
@@ -586,19 +601,25 @@ const DATA = null;
   function renderResult() {
     const box = $('#result'), res = state.res;
     if (!res) { box.innerHTML = ''; setHint(); $('#legend').hidden = true; return; }
-    if (res.error) { box.innerHTML = `<div class="warn"><b>경로가 없어요</b><span>${esc(res.error)}</span></div>`; $('#legend').hidden = true; setHint(); return; }
+    if (res.error) { box.innerHTML = `<div class="warn"><b>${res.searchLimited ? 'GA가 경로를 찾지 못했어요' : '경로가 없어요'}</b><span>${esc(res.error)}</span></div>`; $('#legend').hidden = true; setHint(); return; }
     const { f, c, same } = res, dS = (c.score - f.score) / 60, dR = (c.real - f.real) / 60;
+    const isGa = res.algorithm === 'ga', fastLabel = isGa ? '시간 우선' : '최단 시간';
     const maxReal = Math.max(f.real + 0, c.real + 0);
     let head, sub;
     if (same) { head = '가장 빠른 길이 가장 덜 붐비는 길이에요'; sub = `두 방식이 같은 경로를 골랐어요 · 실제 ${f1(f.real / 60)}분`; }
     else if (dR < 0.05) { head = '같은 시간에 더 덜 붐비는 길이 있어요'; sub = `혼잡 반영 점수 ${f1(f.score / 60)}분 → ${f1(c.score / 60)}분 (${dS > 0 ? '+' : '−'}${f1(Math.abs(dS))})`; }
     else { head = `${f1(dR)}분 더 걸리지만 덜 붐벼요`; sub = `혼잡 반영 점수 ${f1(f.score / 60)}분 → ${f1(c.score / 60)}분 (${dS > 0 ? '+' : '−'}${f1(Math.abs(dS))})`; }
-    const strips = same ? strip('최단·혼잡', f, maxReal) : strip('최단 시간', f, maxReal) + strip('혼잡 반영', c, maxReal);
-    const cards = same ? card('c', '최단 시간 · 혼잡 반영', c, state.time) : card('c', '혼잡 반영', c, state.time) + card('f', '최단 시간', f, state.time);
-    box.innerHTML = `<div class="summary"><h2>${head}</h2><p>${sub}</p>
+    if (isGa) {
+      head = same ? 'GA가 두 기준에서 같은 경로를 찾았어요' : 'GA가 찾은 두 경로를 비교해 보세요';
+      sub = `근사 탐색 · 시간 우선 점수 ${f1(f.score / 60)}분 · 혼잡 반영 점수 ${f1(c.score / 60)}분`;
+    }
+    const strips = same ? strip(isGa ? '시간·혼잡' : '최단·혼잡', f, maxReal) : strip(fastLabel, f, maxReal) + strip('혼잡 반영', c, maxReal);
+    const cards = same ? card('c', fastLabel + ' · 혼잡 반영', c, state.time) : card('c', '혼잡 반영', c, state.time) + card('f', fastLabel, f, state.time);
+    box.innerHTML = `<div class="summary"><h2>${head}</h2><p>${ALGORITHMS[res.algorithm]} · ${sub}</p>
       <div class="strips">${strips}</div>
       <p class="strip-key"><span class="ramp" style="background:linear-gradient(90deg,${rampCss(0)},${rampCss(33.75)},${rampCss(80)},${rampCss(130)})"></span>구간 색 = 평균 혼잡도 · 노랑부터 점수 가산</p></div>${cards}`;
     $('#legend').hidden = false;
+    $('#fastLegendLabel').textContent = fastLabel + ' 경로';
     setHint();
   }
 
@@ -607,8 +628,8 @@ const DATA = null;
     state.focus = null;
     const tk = ++solveToken;
     if (!state.from || !state.to) { state.res = null; renderResult(); requestDraw(); return; }
-    let f, c;
-    try { ({ f, c } = await solve(state.from, state.to, state.day, state.time)); }
+    let f, c, algorithm;
+    try { ({ f, c, algorithm } = await solve(state.from, state.to, state.day, state.time, state.algorithm)); }
     catch (err) {
       if (tk !== solveToken) return;
       state.res = { error: '계산 서버에 연결할 수 없어요. route_server가 켜져 있는지 확인해 주세요.' }; renderResult(); requestDraw(); return;
@@ -617,11 +638,12 @@ const DATA = null;
     if (!f.found || !c.found) {
       const x = c.found ? f : c;
       let msg = '이 경로로는 갈 수 있는 열차가 없어요.';
-      if (x.noTrain && x.originLast >= 0) msg = `차가 없어요. 출발역 막차는 ${hm(x.originLast)}예요.`;
+      if (x.searchLimited) msg = 'GA 탐색에서 경로를 찾지 못했어요. 다익스트라나 A*로 확인해 주세요.';
+      else if (x.noTrain && x.originLast >= 0) msg = `차가 없어요. 출발역 막차는 ${hm(x.originLast)}예요.`;
       else if (x.noTrain) msg = '차가 없어요. 막차 뒤이거나 첫차 전이에요.';
-      state.res = { error: msg };
+      state.res = { error: msg, searchLimited: x.searchLimited };
     } else {
-      state.res = { f, c, same: f.path.length === c.path.length && f.path.every((v, i) => v === c.path[i]) };
+      state.res = { f, c, algorithm, same: f.path.length === c.path.length && f.path.every((v, i) => v === c.path[i]) };
     }
     renderResult();
     if (state.res.f && fit) fitRoute(550); else requestDraw();
@@ -692,6 +714,7 @@ const DATA = null;
     [state.from, state.to] = [state.to, state.from]; state.active = null; syncInputs(); recompute(true);
   });
   document.querySelectorAll('input[name="day"]').forEach((el) => el.addEventListener('change', () => { state.day = +el.value; recompute(false); }));
+  document.querySelectorAll('input[name="algorithm"]').forEach((el) => el.addEventListener('change', () => { state.algorithm = el.value; recompute(false); }));
   const tm = $('#time');
   tm.addEventListener('input', () => { if (!/^\d\d:\d\d$/.test(tm.value)) return; state.time = +tm.value.slice(0, 2) * 3600 + +tm.value.slice(3) * 60; recompute(false); });
   $('#result').addEventListener('click', (e) => {
