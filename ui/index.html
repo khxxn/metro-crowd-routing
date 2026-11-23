@@ -1,0 +1,847 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>혼잡도 길찾기</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --panel: #ffffff; --fg: #1b2230; --muted: #5d687a; --line: #dde2ea;
+    --accent: #2f6fed; --accent-soft: #e8f0ff; --ok: #1a8f4d; --warn: #b8730a; --bad: #cf3d34; --chip: #eef1f6;
+    --how-bg: #f1f5fb; --map-bg: #fbfbfd; --map-edge: #d3d8e2; --map-dot: #b4bbc9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1b2029; --fg: #e8ebf1; --muted: #a0aabb; --line: #2b3240;
+      --accent: #6c9bff; --accent-soft: #1f2c47; --ok: #4cc27d; --warn: #e0a545; --bad: #f0746c; --chip: #262d3a;
+      --how-bg: #18202c; --map-bg: #161a22; --map-edge: #2e3544; --map-dot: #475066;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-size: 15px; line-height: 1.6;
+    font-family: -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  header { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; padding: 14px max(16px, 3vw);
+    background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  h1 { font-size: 18px; margin: 0; font-weight: 700; }
+  h1 small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 1px; }
+  nav { display: flex; gap: 4px; }
+  nav button { border: 0; background: transparent; color: var(--muted); padding: 8px 16px; border-radius: 8px; font: inherit; cursor: pointer; }
+  nav button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+  main { padding: 20px max(16px, 3vw) 56px; max-width: 1360px; margin: 0 auto; }
+  .intro { margin: 0 0 16px; color: var(--muted); max-width: 80ch; }
+  .intro b { color: var(--fg); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-width: 0; }
+  .stack { display: flex; flex-direction: column; gap: 14px; }
+  h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+  h2 .n { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff;
+    font-size: 13px; display: inline-flex; align-items: center; justify-content: center; }
+  .muted { color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* 설명 블록: 각 화면 요소 밑에 '사용한 것 / 만든 방식' */
+  .how { margin-top: 12px; padding: 10px 14px; background: var(--how-bg); border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0; font-size: 13px; color: var(--muted); }
+  .how b { color: var(--fg); font-weight: 650; }
+  .how p { margin: 0; }
+  .how p + p { margin-top: 4px; }
+  .how code { background: var(--chip); padding: 0 5px; border-radius: 4px; font-size: 12px; color: var(--fg); overflow-wrap: anywhere; }
+  .how, .intro, .card, .verdict, .note, .hint { overflow-wrap: anywhere; }
+
+  /* 입력 */
+  .ends { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; align-items: center; }
+  fieldset.ep { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line); border-radius: 10px;
+    margin: 0; padding: 10px 12px 12px; min-width: 0; background: var(--bg); }
+  fieldset.ep legend { font-weight: 700; padding: 0 6px; }
+  fieldset.ep legend.s { color: #1a73e8; }
+  fieldset.ep legend.d { color: #d9480f; }
+  select, input { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; min-width: 0; width: 100%; }
+  select[size] { padding: 4px; }
+  option { padding: 4px 8px; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .swap { background: var(--chip); border: 1px solid var(--line); color: var(--fg); border-radius: 50%; width: 44px; height: 44px;
+    font-size: 18px; cursor: pointer; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px 16px; }
+  .fields label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
+  .fields label .hint { font-weight: 400; }
+  .algos { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
+  .algo { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+    border-left: 5px solid var(--c); background: var(--bg); cursor: pointer; }
+  .algo input { width: auto; margin-top: 4px; }
+  .algo b { display: block; font-size: 14px; }
+  .algo span { font-size: 12px; color: var(--muted); line-height: 1.4; display: block; }
+  .allrow { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-weight: 700; }
+  .allrow input { width: auto; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .go { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 12px 28px; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }
+  .go:disabled { opacity: .6; cursor: wait; }
+  .ex { background: var(--panel); border: 1px solid var(--line); color: var(--fg); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  .ex:hover { border-color: var(--accent); color: var(--accent); }
+  #err { margin-top: 10px; padding: 0; color: var(--bad); font-weight: 600; }
+  #err:not(:empty) { padding: 10px 14px; background: color-mix(in srgb, var(--bad) 10%, var(--panel)); border: 1px solid var(--bad); border-radius: 8px; }
+  @media (max-width: 760px) { .ends { grid-template-columns: minmax(0, 1fr); } .swap { justify-self: center; transform: rotate(90deg); } }
+
+  /* 결과 */
+  #out { margin-top: 18px; display: flex; flex-direction: column; gap: 16px; }
+  .verdict { font-size: 17px; line-height: 1.55; padding: 12px 16px; background: var(--accent-soft); border-radius: 10px; margin-bottom: 12px; }
+  .verdict b { font-weight: 700; }
+  .warnbar { margin-bottom: 12px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--warn); color: var(--warn); font-size: 13px; }
+  .tw { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; background: var(--bg); position: sticky; top: 0; }
+  tr.best td { background: color-mix(in srgb, var(--ok) 12%, var(--panel)); }
+  td .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: baseline; }
+  .pos { color: var(--bad); } .neg { color: var(--ok); } .zero { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(340px, 480px) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 960px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .cards { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .rc { background: var(--bg); border: 1px solid var(--line); border-left: 5px solid var(--c, var(--accent));
+    border-radius: 10px; padding: 11px 13px; cursor: pointer; min-width: 0; }
+  .rc[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--c, var(--accent)); background: var(--panel); }
+  .rc h3 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-weight: 500; }
+  .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); } .badge.bad { color: var(--bad); border-color: var(--bad); }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 6px 10px; margin: 4px 0 8px; }
+  .metrics div { display: flex; flex-direction: column; }
+  .metrics b { font-size: 17px; font-variant-numeric: tabular-nums; }
+  .metrics span { font-size: 11px; color: var(--muted); }
+  .segs { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .seg { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+  .lc { flex: none; min-width: 26px; text-align: center; color: #fff; border-radius: 999px; font-size: 11px; font-weight: 700; padding: 1px 7px; }
+  .seg .t { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  .seg .x { min-width: 0; overflow-wrap: anywhere; }
+  .note { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  details { margin-top: 4px; } summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .mapwrap { position: sticky; top: 76px; display: flex; flex-direction: column; gap: 14px; }
+  #map { width: 100%; height: auto; background: var(--map-bg); border: 1px solid var(--line); border-radius: 10px; display: block; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; margin-top: 8px; color: var(--muted); }
+  .legend i { display: inline-block; width: 20px; height: 5px; border-radius: 3px; vertical-align: middle; margin-right: 5px; }
+  .maphead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .maphead h2 { margin: 0; }
+  .zoombtn { background: var(--panel); border: 1px solid var(--line); color: var(--fg); border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+  .zoombtn:hover { border-color: var(--accent); color: var(--accent); }
+  .zoombtn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #map { transition: none; }
+
+  /* 알고리즘 사용량·효율 */
+  .usage { display: grid; grid-template-columns: minmax(130px, 200px) minmax(0, 1fr) minmax(0, 1fr) 64px; gap: 8px 14px; align-items: center; font-size: 13px; }
+  .usage .uh { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .usage .un { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .usage .un .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+  .ubar { position: relative; height: 22px; background: var(--chip); border-radius: 6px; overflow: hidden; }
+  .ubar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--c); opacity: .85; border-radius: 6px; }
+  .ubar span { position: relative; z-index: 1; padding: 0 8px; line-height: 22px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .ubar.worst { outline: 2px solid var(--bad); }
+  .uit { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .usage .unmark { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+  .worstnote { margin-top: 10px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--bad); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); }
+  .sess { margin-top: 14px; }
+  .sess table { font-size: 13px; }
+  @media (max-width: 760px) { .usage { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .usage .uh { display: none; } .usage .un { grid-column: 1 / -1; margin-top: 6px; } .uit { text-align: left; } }
+
+  /* 실험 결과 */
+  .figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px; }
+  @media (max-width: 520px) { .figs { grid-template-columns: minmax(0, 1fr); } }
+  .figs figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-width: 0; }
+  .figs img { width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
+  .figs figcaption { font-weight: 650; margin-top: 8px; }
+  .figs .how { margin-top: 6px; }
+  pre.meta { white-space: pre-wrap; background: var(--chip); padding: 10px 12px; border-radius: 8px; font-size: 12px; margin: 0; }
+  .tabs-inner { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .tabs-inner button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 999px; padding: 5px 14px; cursor: pointer; font: inherit; font-size: 13px; }
+  .tabs-inner button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sec { margin-top: 18px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>혼잡도 길찾기<small>5분 더 걸려도 덜 붐비는 길은?</small></h1>
+  <nav role="tablist">
+    <button role="tab" id="t-route" aria-selected="true">경로 비교</button>
+    <button role="tab" id="t-results" aria-selected="false">실험 결과</button>
+  </nav>
+</header>
+
+<main>
+<!-- ======================= 경로 비교 ======================= -->
+<section id="tab-route">
+  <p class="intro">서울 지하철에서 <b>가장 빠른 길</b>과 <b>덜 붐비는 길</b>을 알고리즘별로 비교합니다.
+    <b>점수</b>는 혼잡과 환승 부담을 반영한 시간(분)이고, 낮을수록 덜 붐비고 편한 길입니다. <b>실제 시간</b>은 열차를 타고 걷고 기다리는 실제 소요입니다.</p>
+
+  <form id="form" class="stack" autocomplete="off">
+    <section class="card">
+      <h2><span class="n">1</span>어디서 어디로 가나요?</h2>
+      <div class="ends">
+        <fieldset class="ep"><legend class="s">출발역</legend>
+          <select id="srcLine" aria-label="출발 호선"></select>
+          <input id="srcSearch" type="search" placeholder="역 이름 검색" aria-label="출발역 검색">
+          <select id="src" size="7" aria-label="출발역"></select>
+          <span class="hint" id="srcCount"></span>
+        </fieldset>
+        <button type="button" class="swap" id="swap" title="출발·도착 바꾸기" aria-label="출발·도착 바꾸기">⇄</button>
+        <fieldset class="ep"><legend class="d">도착역</legend>
+          <select id="dstLine" aria-label="도착 호선"></select>
+          <input id="dstSearch" type="search" placeholder="역 이름 검색" aria-label="도착역 검색">
+          <select id="dst" size="7" aria-label="도착역"></select>
+          <span class="hint" id="dstCount"></span>
+        </fieldset>
+      </div>
+      <div class="how">
+        <p><b>사용한 것</b> 브라우저 기본 선택 목록(<code>&lt;select&gt;</code>)과 검색 입력, 서버 API <code>/api/lines</code>(호선별 역 순서)·<code>/api/stations</code>(역 이름과 지나는 호선). 역 데이터는 <code>data/station_nodes.csv</code>, 서울 1~9호선뿐입니다.</p>
+        <p><b>만든 방식</b> 호선을 고르면 그 호선의 역을 노선 순서대로 보여주고, "전체 호선"은 모든 역을 가나다순으로 보여줍니다. 검색칸은 현재 목록에서 이름에 글자가 들어간 역만 남깁니다. 환승역처럼 같은 이름의 노드가 여러 개이면 모두 출발점(도착점)으로 씁니다.</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="n">2</span>언제, 어떤 조건으로 가나요?</h2>
+      <div class="fields">
+        <label>요일<select id="day"><option value="weekday">평일</option><option value="sat">토요일</option><option value="sun">일요일</option></select></label>
+        <label>출발 시각<input id="time" value="18:00" pattern="\d{1,2}:\d{2}" required><span class="hint">24:30처럼 자정 이후도 입력할 수 있습니다</span></label>
+        <label>혼잡도 적용 방식<select id="mode"><option value="A">A: 출발 시각의 혼잡도를 전 구간에</option><option value="B">B: 구간마다 그 시각의 혼잡도</option></select><span class="hint">A는 정확한 비교용, B는 현실에 가까운 근사</span></label>
+        <label>허용 여유 (초)<input id="slack" type="number" min="0" step="30" value="300"><span class="hint">최단 시간보다 이만큼 더 걸려도 됩니다 (300초 = 5분)</span></label>
+        <label>혼잡 민감도 ALPHA<input id="alpha" type="number" min="0" step="0.0005" value="0.00631"><span class="hint">클수록 붐비는 구간을 더 피합니다</span></label>
+      </div>
+      <div class="how">
+        <p><b>사용한 것</b> 입력값은 <code>/api/route</code>로 서버에 보내고, 서버가 <code>graph.py</code>의 <code>Config</code>로 바꿔 계산합니다. 혼잡도는 <code>data/ride_congestion_filled.csv</code>(간선·요일·시간대별 %)입니다.</p>
+        <p><b>만든 방식</b> 하루를 05:30부터 30분 간격 39칸으로 나눠 그 칸의 혼잡도를 찾습니다. 탑승 구간 점수 = 탑승 시간 × (1 + ALPHA × max(혼잡도 − 33.75, 0)), 환승 점수는 팀 CSV의 값(걷기+대기의 2.204배)입니다. 허용 시간 T = 최단 실제 시간 + 허용 여유이고, T 안에서 점수가 가장 낮은 길을 찾는 것이 LARAC·정답 기준입니다.</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="n">3</span>어떤 알고리즘으로 비교할까요?</h2>
+      <label class="allrow"><input type="checkbox" id="algoAll">모두 선택</label>
+      <div class="algos" id="algos"></div>
+      <div class="how">
+        <p><b>사용한 것</b> 파이썬 표준 라이브러리 <code>heapq</code>(우선순위 큐)로 직접 구현한 알고리즘들입니다(<code>algorithms/</code> 폴더). 라이브러리의 길찾기 함수는 쓰지 않았습니다.</p>
+        <p><b>만든 방식</b> 같은 질의를 고른 알고리즘마다 실행해서 결과를 나란히 비교합니다. A*는 도착역에서 거꾸로 계산한 하한을 길잡이로 써서 점수가 가장 낮은 길을 찾고, LARAC은 "점수 + λ × 시간" 가중치를 바꿔 가며 허용 시간 안의 답을 찾습니다. 정답 기준은 (시간, 점수) 후보를 모두 추려서 허용 시간 안의 정확한 답을 냅니다. 이 화면에는 Dijkstra를 따로 보여주지 않습니다(A*·LARAC·정답 기준이 내부에서 최단 시간·하한을 계산할 때만 씁니다).</p>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button class="go" id="go" type="submit">경로 찾기</button>
+      <span class="muted">예시</span>
+      <button type="button" class="ex" data-ex="개화|중앙보훈병원|weekday|18:00">개화 → 중앙보훈병원 (퇴근 시간)</button>
+      <button type="button" class="ex" data-ex="당산|석촌|weekday|08:30">당산 → 석촌 (환승)</button>
+      <button type="button" class="ex" data-ex="미아|망원|sat|08:30">미아 → 망원 (토요일)</button>
+    </div>
+  </form>
+  <div id="err" role="alert"></div>
+
+  <div id="out" hidden>
+    <section class="card">
+      <h2>결과 한눈에 보기</h2>
+      <div class="verdict" id="verdict"></div>
+      <div id="warn"></div>
+      <div class="tw"><table id="cmp"></table></div>
+      <div class="how">
+        <p><b>사용한 것</b> 서버 <code>/api/route</code>가 알고리즘마다 돌려준 점수, 실제 시간, 확장 노드 수, 실행 시간을 브라우저(JavaScript)에서 표로 그립니다.</p>
+        <p><b>만든 방식</b> "A* 대비" 열은 점수 최소(A*) 결과와의 뺄셈입니다(초록 = 줄어듦, 빨강 = 늘어남). 위 문장의 "가장 빠른 길"은 LARAC·정답 기준이 계산한 허용 시간 T에서 허용 여유를 뺀 값입니다. 가장 낮은 점수(허용 시간 이내)에 초록 배경을 칠하고, 확장 노드는 우선순위 큐에서 꺼내 펼친 상태의 수, 실행 시간은 서버에서 잰 값입니다.</p>
+      </div>
+    </section>
+
+    <section class="card" id="usageCard">
+      <h2>알고리즘 사용량과 효율</h2>
+      <div class="usage" id="usage"></div>
+      <div class="worstnote" id="worst" hidden></div>
+      <div class="sess">
+        <h2 style="font-size:14px;margin-bottom:6px">이 화면에서 지금까지 돌린 횟수 <span class="muted" style="font-weight:400;font-size:12px">(페이지를 새로 고치면 0부터)</span></h2>
+        <div class="tw"><table id="sess"></table></div>
+      </div>
+      <div class="how">
+        <p><b>사용한 것</b> 서버 <code>/api/route</code>가 알고리즘마다 돌려준 실행 시간(<code>runtime_ms</code>), 확장 노드 수(<code>expanded</code>), 반복 횟수(<code>iterations</code>)를 막대로 그렸습니다. 아래 표의 누적값은 이 페이지가 열려 있는 동안 브라우저(JavaScript)에서 더한 값입니다.</p>
+        <p><b>만든 방식</b> 막대 길이는 이번 검색에서 가장 큰 값을 100%로 한 비율입니다. <b>가장 비효율적</b>은 같은 질의를 푸는 데 실행 시간이 가장 오래 걸린 알고리즘이고, 탐색 노드가 가장 많은 알고리즘은 따로 표시합니다. 한 번 잰 값이라 몇 ms 차이는 흔들릴 수 있습니다. 여러 질의의 중앙값은 "실험 결과" 탭에 있습니다. 답의 품질(점수)은 위 비교표를 보세요. 효율은 속도와 탐색량만 뜻합니다.</p>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>알고리즘별 경로</h2>
+        <div class="cards" id="cards"></div>
+        <div class="how">
+          <p><b>사용한 것</b> 서버의 <code>routelib.describe()</code>가 만든 구간 목록입니다. 카드를 누르면 지도에서 그 경로만 강조됩니다.</p>
+          <p><b>만든 방식</b> 경로의 간선을 호선별 구간으로 묶고 환승을 따로 표시합니다. 도착 시각 = 출발 시각 + 실제 시간이고, "최대 혼잡"은 그 구간 간선의 해당 시간대 혼잡도 중 가장 큰 값입니다.</p>
+        </div>
+      </section>
+      <div class="mapwrap">
+        <section class="card">
+          <div class="maphead">
+            <h2>지도</h2>
+            <button type="button" class="zoombtn" id="zoomBtn" aria-pressed="false" title="지도는 그대로 두고, 선택한 경로 쪽으로 확대합니다">선택한 경로 확대</button>
+          </div>
+          <svg id="map" viewBox="0 0 900 640" role="img" aria-label="경로 지도"></svg>
+          <div class="legend" id="legend"></div>
+          <div class="how">
+            <p><b>사용한 것</b> 지도 라이브러리 없이 <code>&lt;svg&gt;</code>를 JavaScript로 직접 그렸습니다. 좌표는 <code>station_nodes.csv</code>의 위도·경도입니다.</p>
+            <p><b>만든 방식</b> 경도에 cos(위도)를 곱해 가로세로 비율을 맞추고 900×640 칸에 맞춰 투영합니다. 회색 선은 모든 탑승 간선, 색 선은 알고리즘별 경로입니다. 같은 경로는 굵기를 달리해 겹쳐 그립니다. <b>선택한 경로 확대</b>를 켜면 경로가 지나는 역을 모두 담는 사각형으로 <code>viewBox</code>만 좁힙니다. 카드를 눌러 경로 하나를 고르면 그 경로 기준으로, 고르지 않았으면 모든 경로 기준으로 확대하고, 끄면 원래 전체 지도로 돌아옵니다.</p>
+          </div>
+        </section>
+        <section class="card">
+          <h2>출발 시각별 점수 <span class="muted" id="curveTitle" style="font-weight:400;font-size:13px"></span></h2>
+          <svg id="curve" viewBox="0 0 620 220" width="100%" role="img" aria-label="출발 시각별 점수 곡선"></svg>
+          <div class="legend" id="curveLegend"></div>
+          <div class="how">
+            <p><b>사용한 것</b> 서버 <code>/api/curve</code>가 05:30~24:30의 39개 출발 시각마다 A*(점수 최소)와 LARAC(허용 시간 안)을 실행한 결과를 <code>&lt;svg&gt;</code>로 그렸습니다.</p>
+            <p><b>만든 방식</b> 두 선의 간격이 클수록 그 시각에는 허용 시간 제약이 점수를 더 끌어올린다는 뜻입니다. 붙어 있으면 점수 최소 경로가 허용 시간 안에 들어온다는 뜻입니다. 선 위에 마우스를 올리면 시각별 값이 나옵니다.</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= 실험 결과 ======================= -->
+<section id="tab-results" hidden>
+  <p class="intro">아래 <b>내가 고른 호선의 결과</b>에서 호선 하나를 골라 그 호선 안의 출발·도착 쌍으로 알고리즘들을 바로 돌려 볼 수 있습니다. 그 아래는 전체 호선에서 미리 돌려 둔 실험입니다. 서울 1~9호선 팀 데이터로만 만들었습니다.</p>
+
+  <div class="card">
+    <h2>내가 고른 호선의 결과</h2>
+    <form id="lineForm" class="fields" autocomplete="off">
+      <label>호선<select id="xLine"><option value="all">전체 1~9호선</option>
+        <option value="1">1호선</option><option value="2" selected>2호선</option><option value="3">3호선</option><option value="4">4호선</option><option value="5">5호선</option>
+        <option value="6">6호선</option><option value="7">7호선</option><option value="8">8호선</option><option value="9">9호선</option></select></label>
+      <label>요일<select id="xDay"><option value="weekday">평일</option><option value="sat">토요일</option><option value="sun">일요일</option></select></label>
+      <label>출발 시각<input id="xTime" value="08:30" pattern="\d{1,2}:\d{2}" required></label>
+      <label>출발·도착 쌍 수<input id="xN" type="number" min="5" max="60" step="5" value="25"><span class="hint">5~60쌍</span></label>
+      <label>&nbsp;<button class="go" id="xGo" type="submit" style="padding:9px 18px;font-size:15px">이 호선 결과 보기</button></label>
+    </form>
+    <div class="hint" style="margin-top:6px">혼잡 방식·허용 여유·ALPHA는 "경로 비교" 탭에 입력한 값을 그대로 씁니다.</div>
+    <div id="xErr" role="alert"></div>
+    <div id="xOut" hidden>
+      <div class="verdict" id="xVerdict" style="margin-top:12px"></div>
+      <div class="tw"><table id="xStats"></table></div>
+      <h2 style="font-size:14px;margin:16px 0 6px">출발·도착 쌍별 결과 <span class="muted" style="font-weight:400;font-size:12px" id="xPairNote"></span></h2>
+      <div class="tw" style="max-height:420px;overflow:auto"><table id="xPairs"></table></div>
+    </div>
+    <div class="how">
+      <p><b>사용한 것</b> 서버 <code>/api/line_experiment</code>가 <code>experiments/run.py</code>의 <code>sample_line_ods</code>(쌍 고르기)와 <code>_timed</code>(실행 시간 3회 중앙값)로 A*·LARAC·정답 기준을 같은 질의에 돌립니다. 같은 설정이면 같은 쌍(시드 42)이 나오고, 한 번 돌린 결과는 서버가 기억합니다.</p>
+      <p><b>만든 방식</b> 선택한 호선에 출발·도착역이 모두 있고, 점수 최소 경로의 탑승 구간 80% 이상이 그 호선인 쌍만 뽑습니다. "전체"는 호선 제한 없이 무작위로 뽑습니다. 오차 = (알고리즘 점수 − 정답 기준 점수) ÷ 정답 기준 점수 × 100이고, 허용 시간 안에 도착한 결과만 계산합니다. 한 호선 안에서만 움직이는 쌍은 갈아탈 대안이 거의 없어서 알고리즘들이 같은 경로를 내는 경우가 많습니다. 그래서 오차가 0%로 나오는 것은 버그가 아니라 정상입니다. 실행 시간이 가장 긴 알고리즘을 "가장 비효율적"으로 표시합니다. 유전 알고리즘은 아직 연결되지 않아 빠졌습니다.</p>
+    </div>
+  </div>
+  <div class="card">
+    <h2>실험 설정</h2>
+    <pre class="meta" id="meta">불러오는 중…</pre>
+    <div class="how">
+      <p><b>사용한 것</b> <code>python -m experiments.run</code>이 만든 <code>results/meta.txt</code>를 그대로 보여줍니다.</p>
+      <p><b>만든 방식</b> 역 이름 404개에서 무작위 쌍을 시드 고정으로 뽑고(실제 10분 미만 쌍 제외), 요일 × 출발 시각마다 알고리즘 6개를 실행합니다. 2호선·5호선 위주 OD는 따로 뽑았습니다.</p>
+    </div>
+  </div>
+  <div class="card sec">
+    <h2>알고리즘 비교 요약</h2>
+    <div class="tabs-inner" id="grpTabs"></div>
+    <div class="tw"><table id="summary"></table></div>
+    <div class="how">
+      <p><b>사용한 것</b> <code>results/summary.csv</code>(질의 하나마다 알고리즘 6개를 실행한 <code>raw.csv</code>를 묶은 표). 서버가 파일을 읽어 <code>/api/results</code>로 줍니다.</p>
+      <p><b>만든 방식</b> 오차율 = (알고리즘 점수 − 정답 기준 점수) ÷ 정답 기준 점수 × 100이고, 허용 시간 안에 도착한 결과만 계산합니다. "정확"은 정답 기준과 점수가 같은 비율입니다. 실행 시간은 질의마다 5회 중앙값이며 A*·정답 기준은 하한을 새로 만드는 시간을 포함하고, warm은 하한을 재사용할 때입니다. 유전 알고리즘은 팀원 구현이 연결되기 전이라 비어 있습니다.</p>
+    </div>
+  </div>
+  <div class="sec"><div class="figs" id="figs"></div></div>
+  <div class="card sec">
+    <h2>민감도 분석 (평일 08:30)</h2>
+    <div class="tw"><table id="sens"></table></div>
+    <div class="how">
+      <p><b>사용한 것</b> <code>results/sensitivity.csv</code>와 <code>fig_sensitivity.png</code>.</p>
+      <p><b>만든 방식</b> ALPHA 3가지 × 허용 여유 3가지 = 9가지 설정에서 무작위 OD 100쌍을 다시 풀고, LARAC 경로(또는 점수 최소 경로)가 시간 최단 경로와 역 순서가 다른 비율을 셉니다. 허용 여유가 커질수록 제약이 덜 걸려서 LARAC이 점수 최소 경로와 같아집니다.</p>
+    </div>
+  </div>
+  <div class="card sec">
+    <h2>대표 OD 경로 비교</h2>
+    <div id="pc"></div>
+    <div class="how">
+      <p><b>사용한 것</b> <code>results/path_compare.md</code>(실험 러너가 만든 마크다운 표)를 화면용 표로 바꿔 그렸습니다.</p>
+      <p><b>만든 방식</b> 평일 08:30 질의 중 점수 최소 경로가 시간 최단 경로보다 1분 넘게 돌아가는 OD 2개를 골라, 알고리즘별로 지나는 역을 나란히 놓았습니다.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<script>
+const LINE_COLOR = {1:'#0052A4',2:'#00A84D',3:'#EF7C1C',4:'#00A5DE',5:'#996CAC',6:'#CD7C2F',7:'#747F00',8:'#E6186C',9:'#BDB092',
+  '경의·중앙선':'#2FA784','수인분당선':'#E39500','신분당선':'#D4003B','인천국제공항선':'#0090D2','인천지하철 1호선':'#6C9BD2',
+  '인천지하철 2호선':'#ED8B00','경춘선':'#0C8E72','서해선':'#81A914','경강선':'#003DA5','의정부':'#D98E00','김포도시철도':'#A17800',
+  'GTX-A':'#9A6292','자기부상철도':'#C98F00','수도권 경량도시철도 에버라인':'#56AD2D','수도권 경량도시철도 우이신설선':'#8FAE10',
+  '수도권 경량도시철도 신림선':'#6789CA'};
+const ALGO_COLOR = {astar:'#2f9e44', larac:'#f08c00', ga:'#adb5bd', ref:'#ae3ec9'};
+const ALGO_NAME = {astar:'혼잡 가중 A*', larac:'LARAC', ga:'유전 알고리즘', ref:'정답 기준(Reference)'};
+const ALGO_DESC = {astar:'혼잡과 환승 부담을 반영한 점수가 가장 낮은 길을 찾습니다(시간 제한 없음).',
+  larac:'시간 여유 안에서 점수가 낮은 길을 찾는 근사 알고리즘입니다.',
+  ga:'팀원이 구현해서 연결하면 나타납니다.',
+  ref:'시간 여유 안의 정확한 최적해입니다. 다른 알고리즘을 채점하는 기준입니다.'};
+const ALGO_ORDER = ['astar','larac','ga','ref'];
+const STATUS_TEXT = {ok:'정상', no_service:'차가 없어요', no_route:'경로 없음', infeasible:'허용시간 초과', not_implemented:'구현 대기'};
+const FIG_CAP = {
+  'fig_gap_box.png':['알고리즘별 오차율', '정답 기준 점수와 얼마나 차이 나는지를 상자 그림으로 그렸습니다. 상자가 0에 붙어 있으면 거의 항상 정답입니다. 점은 가끔 크게 틀린 질의입니다. 허용시간 안에 도착한 결과만 포함합니다.'],
+  'fig_runtime.png':['알고리즘별 실행 시간', '질의 하나를 푸는 데 걸린 시간의 중앙값입니다. 막대 길이가 로그 눈금이라 10배 차이가 같은 간격으로 보입니다. A*와 정답 기준은 하한 계산 시간이 들어 있습니다.'],
+  'fig_tradeoff.png':['실제시간 증가 대비 점수 감소', '점 하나가 질의 하나입니다. 가로는 시간 최단 경로보다 더 걸린 시간, 세로는 점수가 줄어든 양입니다. 파란 점(점수 최소)은 5분 선을 넘기도 하지만 주황 삼각형(LARAC)은 허용 여유 안에 머뭅니다.'],
+  'fig_bound_active.png':['LARAC 제약이 걸린 비율', '허용 시간 제약이 실제로 답을 바꾼 질의의 비율입니다. 걸리지 않으면 점수 최소 경로가 그대로 답입니다.'],
+  'fig_time_curve.png':['출발 시각별 점수 곡선 (OD 1개)', '같은 출발·도착역으로 출발 시각만 바꿨을 때 점수가 어떻게 달라지는지 보여줍니다. 출퇴근 시간대에 두 선의 간격이 벌어집니다.'],
+  'fig_line_compare.png':['실험 A: 2호선 위주 vs 5호선 위주', '같은 노선 안에서 움직이는 OD는 대안 경로가 거의 없어서 시간 최단과 점수 최소가 거의 같고, 환승 선택지가 많은 무작위 OD에서만 달라집니다.'],
+  'fig_sensitivity.png':['ALPHA·허용 여유 민감도', '칸 안의 숫자는 시간 최단 경로와 다른 경로가 나온 OD의 비율(%)입니다. 왼쪽은 LARAC, 오른쪽은 점수 최소 경로입니다.']};
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const svgEl = (tag, attrs) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const num = (v, d = 1) => (v == null || v === '' || isNaN(+v)) ? '–' : (+v).toFixed(d);
+const getJSON = async (u) => { const r = await fetch(u); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; };
+
+/* 화면 오류는 조용히 지나가지 않고 위쪽 띠로 보여준다 */
+function showError(msg) { $('err').textContent = '화면 오류: ' + msg; }
+window.addEventListener('error', (e) => showError(e.message));
+window.addEventListener('unhandledrejection', (e) => showError(e.reason && e.reason.message || String(e.reason)));
+
+/* ---------------- 탭 ---------------- */
+function showTab(name) {
+  for (const t of ['route', 'results']) { $('tab-' + t).hidden = t !== name; $('t-' + t).setAttribute('aria-selected', String(t === name)); }
+  if (name === 'results' && !showTab.loaded) { showTab.loaded = true; loadResults(); }
+  try { history.replaceState(null, '', location.pathname + location.search + (name === 'results' ? '#results' : '')); } catch (e) {}
+}
+$('t-route').onclick = () => showTab('route');
+$('t-results').onclick = () => showTab('results');
+
+/* ---------------- 지도 ---------------- */
+let GEO = null, NODE = {}, proj = null;
+function buildProjection() {
+  const lat0 = GEO.nodes.reduce((a, n) => a + n.lat, 0) / GEO.nodes.length;
+  const k = Math.cos(lat0 * Math.PI / 180);
+  const xs = GEO.nodes.map(n => n.lon * k), ys = GEO.nodes.map(n => -n.lat);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const W = 900, H = 640, pad = 24, s = Math.min((W - 2 * pad) / (x1 - x0), (H - 2 * pad) / (y1 - y0));
+  const ox = (W - s * (x1 - x0)) / 2, oy = (H - s * (y1 - y0)) / 2;
+  proj = (n) => [ox + (n.lon * k - x0) * s, oy + (-n.lat - y0) * s];
+  for (const n of GEO.nodes) { NODE[n.id] = n; n.xy = proj(n); }
+}
+function drawBase() {
+  const m = $('map'); m.replaceChildren();
+  const g0 = svgEl('g', {id: 'base', 'stroke-width': 1}); m.append(g0);
+  for (const [u, v] of GEO.edges) {
+    const a = NODE[u], b = NODE[v]; if (!a || !b) continue;
+    g0.append(svgEl('line', {x1: a.xy[0], y1: a.xy[1], x2: b.xy[0], y2: b.xy[1], stroke: 'var(--map-edge)'}));
+  }
+  for (const n of GEO.nodes) g0.append(svgEl('circle', {cx: n.xy[0], cy: n.xy[1], r: 1.6, fill: 'var(--map-dot)'}));
+  m.append(svgEl('g', {id: 'routes'}));
+}
+let ZOOM = false, CUR = null;
+const MAP_W = 900, MAP_H = 640;
+/* 확대: 보이는 경로의 역을 모두 담는 사각형으로 viewBox만 좁힌다. 끄면 전체 지도 */
+function mapView(okr, focus) {
+  const dim = focus && focus !== '_all';
+  const shown = okr.filter(r => !dim || focus === r.algo);
+  const pts = shown.flatMap(r => r.path.map(id => NODE[id]).filter(Boolean).map(n => n.xy));
+  if (!ZOOM || !pts.length) return [0, 0, MAP_W, MAP_H];
+  let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0]));
+  let y0 = Math.min(...pts.map(p => p[1])), y1 = Math.max(...pts.map(p => p[1]));
+  let w = Math.max(x1 - x0, 90), h = Math.max(y1 - y0, 90);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  w *= 1.3; h *= 1.3;                                   // 둘레 여백
+  if (w / h > MAP_W / MAP_H) h = w * MAP_H / MAP_W; else w = h * MAP_W / MAP_H;   // 지도 칸 비율 유지
+  w = Math.min(w, MAP_W); h = Math.min(h, MAP_H);
+  return [Math.max(0, Math.min(MAP_W - w, cx - w / 2)), Math.max(0, Math.min(MAP_H - h, cy - h / 2)), w, h];
+}
+function drawRoutes(results, focus) {
+  CUR = {results, focus};
+  const gr = $('routes'); gr.replaceChildren();
+  const okr = results.filter(r => r.path);
+  const vb = mapView(okr, focus), k = vb[2] / MAP_W;     // k: 확대했을 때 선·글자 크기를 화면에서 같게 보이도록 곱하는 값
+  $('map').setAttribute('viewBox', vb.map(v => v.toFixed(1)).join(' '));
+  const base = $('base');
+  if (base) { base.setAttribute('stroke-width', k); for (const c of base.querySelectorAll('circle')) c.setAttribute('r', 1.6 * k); }
+  const widths = {}; okr.forEach((r, i) => widths[r.algo] = 4 + 3 * (okr.length - 1 - i));
+  const dim = focus && focus !== '_all';
+  for (const r of okr) {
+    const pts = r.path.map(id => NODE[id]).filter(Boolean).map(n => n.xy.join(',')).join(' ');
+    const on = !dim || focus === r.algo;
+    gr.append(svgEl('polyline', {points: pts, fill: 'none', stroke: ALGO_COLOR[r.algo], 'stroke-width': (dim && on ? widths[r.algo] + 2 : widths[r.algo]) * k,
+      'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: on ? .95 : .15}));
+  }
+  const first = okr[0];
+  if (first) for (const [id, lab] of [[first.path[0], '출발'], [first.path[first.path.length - 1], '도착']]) {
+    const n = NODE[id]; if (!n) continue;
+    gr.append(svgEl('circle', {cx: n.xy[0], cy: n.xy[1], r: 7 * k, fill: 'var(--panel)', stroke: 'var(--fg)', 'stroke-width': 3 * k}));
+    const t = svgEl('text', {x: n.xy[0] + 10 * k, y: n.xy[1] - 9 * k, 'font-size': 15 * k, 'font-weight': 700, fill: 'var(--fg)',
+      stroke: 'var(--map-bg)', 'stroke-width': 4 * k, 'paint-order': 'stroke'}); t.textContent = n.name + ' ' + lab; gr.append(t);
+  }
+}
+$('zoomBtn').onclick = () => {
+  ZOOM = !ZOOM;
+  $('zoomBtn').setAttribute('aria-pressed', String(ZOOM));
+  $('zoomBtn').textContent = ZOOM ? '원래 크기로' : '선택한 경로 확대';
+  if (CUR) drawRoutes(CUR.results, CUR.focus);
+};
+
+/* ---------------- 결과 요약 ---------------- */
+const lbl = (r) => r.label || ALGO_NAME[r.algo];
+const samePath = (a, b) => a.path && b.path && a.path.join('|') === b.path.join('|');
+function signed(v, unit) { const s = v > 0.049 ? 'pos' : v < -0.049 ? 'neg' : 'zero'; const t = (v > 0.049 ? '+' : '') + v.toFixed(1) + unit; const sp = el('span', s, Math.abs(v) < 0.05 ? '±0' + unit : t); return sp; }
+function renderSummary(data, res) {
+  const ok = res.filter(r => r.status === 'ok');
+  const cheap = ok.find(r => r.algo === 'astar');            // 점수 최소 경로 = 비교 기준
+  const larac = ok.find(r => r.algo === 'larac'), ref = ok.find(r => r.algo === 'ref');
+  const exT = ((larac || ref || {}).extra || {}).T;           // 허용 시간 T = 가장 빠른 실제 시간 + 허용 여유
+  const shortest = exT != null ? (exT - data.slack) / 60 : null;
+  const v = $('verdict'); v.replaceChildren();
+  const b = (t) => { const x = el('b', null, t); return x; };
+  if (!ok.length && res.length && res.every(r => r.status === 'no_service')) { v.append(b('이 시각에는 차가 없어요.'), ` ${data.time} 출발은 첫차 전이거나 막차 뒤라서 탈 수 있는 열차가 없습니다. 출발 시각을 바꿔 보세요.`); }
+  else if (!ok.length) { v.append('이 조건에서는 경로가 없습니다. 출발 시각을 바꾸거나 다른 역을 골라 보세요.'); }
+  else if (cheap) {
+    v.append('점수 최소 경로(A*)는 실제 ', b(`${num(cheap.real_min)}분`), ', 점수 ', b(`${num(cheap.cost_min)}분`), '입니다');
+    if (shortest != null) { const d = cheap.real_min - shortest; v.append(d > 0.049 ? `. 가장 빠른 길(실제 ${num(shortest)}분)보다 ${num(d)}분 더 걸리는 대신 덜 붐비는 길입니다` : `. 가장 빠른 길(실제 ${num(shortest)}분)과 걸리는 시간이 같습니다`); }
+    v.append('.');
+    if (larac) v.append(` 허용 여유 ${num(data.slack / 60, 0)}분 안에서 고르면(LARAC) 실제 ${num(larac.real_min)}분, 점수 ${num(larac.cost_min)}분입니다${samePath(larac, cheap) ? ' (점수 최소 경로와 같음).' : '.'}`);
+  } else v.append('점수 최소(A*) 결과가 없어 비교 문장을 만들지 못했습니다. 아래 표를 보세요.');
+  $('warn').replaceChildren();
+  const bestCost = Math.min(...ok.filter(r => r.feasible !== false).map(r => r.cost_min));
+  const t = $('cmp'); t.replaceChildren();
+  const heads = [['알고리즘', ''], ['도착', ''], ['실제 시간(분)', '열차·걷기·대기를 합친 실제 소요'], ['점수(분)', '혼잡과 환승 부담을 반영한 시간. 낮을수록 좋음'], ['A* 대비 실제', 'A*(점수 최소) 결과와의 차이'], ['A* 대비 점수', 'A*(점수 최소) 결과와의 차이'], ['환승', ''], ['허용 시간', '실제 시간이 최단+허용 여유 이내인가'], ['확장 노드', '탐색에서 펼친 상태 수'], ['실행(ms)', '']];
+  const hr = el('tr'); heads.forEach(([h, tt]) => { const th = el('th', null, h); if (tt) th.title = tt; hr.append(th); }); t.append(hr);
+  for (const r of res) {
+    const tr = el('tr'); const td0 = el('td'); const dot = el('span', 'dot'); dot.style.background = ALGO_COLOR[r.algo]; td0.append(dot, lbl(r)); tr.append(td0);
+    if (r.status !== 'ok') { const td = el('td', null, STATUS_TEXT[r.status] || r.status); td.colSpan = heads.length - 1; td.style.textAlign = 'left'; td.className = 'muted'; tr.append(td); t.append(tr); continue; }
+    if (r.feasible !== false && Math.abs(r.cost_min - bestCost) < 0.005) tr.className = 'best';
+    tr.append(el('td', null, r.detail.arrive), el('td', null, num(r.real_min)), el('td', null, num(r.cost_min)));
+    const c1 = el('td'), c2 = el('td');
+    if (cheap) { c1.append(signed(r.real_min - cheap.real_min, '분')); c2.append(signed(r.cost_min - cheap.cost_min, '분')); } else { c1.textContent = c2.textContent = '–'; }
+    tr.append(c1, c2, el('td', null, r.detail.transfers + '회'));
+    const ft = el('td', null, r.feasible === true ? '이내' : r.feasible === false ? '초과' : '–'); if (r.feasible === false) ft.className = 'pos';
+    tr.append(ft, el('td', null, String(r.expanded)), el('td', null, num(r.runtime_ms, 1)));
+    t.append(tr);
+  }
+}
+
+/* ---------------- 카드 ---------------- */
+function chipText(line, label) { return /^\d$/.test(line) ? line : (label || line).replace(/(호선|선|철도|경전철)$/, ''); }
+function lineChip(line, label) { const c = el('span', 'lc', chipText(line, label)); c.style.background = LINE_COLOR[line] || '#666'; c.title = label || line; return c; }
+function segRow(s) {
+  const row = el('div', 'seg'); row.append(el('span', 't', s.at));
+  if (s.type === 'ride') {
+    row.append(lineChip(s.line, s.line_label));
+    const st = s.stations, n = st.length - 1;
+    const cong = `최대 혼잡 ${num(s.max_cong, 0)}%`;
+    row.append(el('span', 'x', `${st[0]} → ${st[st.length - 1]}  ${n}정거장 · ${s.minutes}분 · ${cong}`));
+  } else {
+    const c = el('span', 'lc', '환승'); c.style.background = '#667085'; row.append(c);
+    row.append(el('span', 'x', `${s.station}  ${s.from_label} → ${s.to_label} · ${s.minutes}분`));
+  }
+  return row;
+}
+function metric(v, l, tip) { const d = el('div'); d.append(el('b', null, v), el('span', null, l)); if (tip) d.title = tip; return d; }
+function card(r, groupText) {
+  const c = el('div', 'rc'); c.style.setProperty('--c', ALGO_COLOR[r.algo]); c.tabIndex = 0; c.setAttribute('role', 'button'); c.setAttribute('aria-pressed', 'false');
+  const h = el('h3'); h.append(el('span', null, lbl(r)));
+  h.append(el('span', 'badge ' + (r.status === 'ok' ? 'ok' : r.status === 'not_implemented' ? '' : 'bad'), STATUS_TEXT[r.status] || r.status));
+  if (r.status === 'ok' && r.feasible === false) h.append(el('span', 'badge warn', '허용시간 초과'));
+  if (r.status === 'ok' && r.feasible === true) h.append(el('span', 'badge ok', '허용시간 이내'));
+  c.append(h);
+  if (r.status === 'not_implemented') { c.append(el('div', 'note', '팀원 구현이 algorithms/genetic.py의 run()에 연결되면 여기에 나타납니다.')); return c; }
+  if (r.status !== 'ok') { c.append(el('div', 'note', r.status === 'no_service' ? '첫차·막차 또는 환승 불가로 막혔습니다.' : '경로를 찾지 못했습니다.')); return c; }
+  const m = el('div', 'metrics');
+  m.append(metric(num(r.cost_min) + '분', '점수', '혼잡과 환승 부담을 반영한 시간. 낮을수록 좋음'), metric(num(r.real_min) + '분', '실제 소요'),
+    metric(r.detail.arrive, '도착'), metric(r.detail.transfers + '회', '환승'),
+    metric(String(r.expanded), '확장 노드', '탐색에서 펼친 상태 수'), metric(num(r.runtime_ms, 1) + 'ms', '실행 시간'));
+  if (r.iterations > 1 || r.algo === 'larac') m.append(metric(String(r.iterations), '반복', 'LARAC이 λ를 고친 횟수'));
+  c.append(m);
+  const segs = el('div', 'segs'); for (const s of r.detail.segments) segs.append(segRow(s)); c.append(segs);
+  const ex = r.extra || {}, bits = [];
+  if (ex.T != null) bits.push(`허용 시간 T = ${num(ex.T / 60)}분`);
+  if (ex.bound_active != null) bits.push(ex.bound_active ? '허용 시간 제약이 걸림' : '제약 없음(점수 최소 경로가 그대로 답)');
+  if (ex.lambda) bits.push(`λ = ${(+ex.lambda).toFixed(4)}`);
+  if (ex.LB != null) bits.push(`라그랑주 하한 ${num(ex.LB / 60)}분`);
+  if (r.cost_B_min != null) bits.push(`방식 A 점수 ${num(r.cost_A_min)}분 / 방식 B 점수 ${num(r.cost_B_min)}분`);
+  if (ex.note) bits.push(ex.note);
+  if (bits.length) c.append(el('div', 'note', bits.join('  ·  ')));
+  if (groupText) c.append(el('div', 'note', groupText));
+  const d = el('details'); d.append(el('summary', null, '지나가는 역 전체'));
+  const all = []; for (const s of r.detail.segments) if (s.type === 'ride') all.push(`[${s.line_label}] ` + s.stations.join(' → '));
+  const body = el('div', 'note', all.join('\n')); body.style.whiteSpace = 'pre-wrap'; d.append(body); c.append(d);
+  return c;
+}
+
+/* ---------------- 알고리즘 사용량·효율 ---------------- */
+const SESS = {};   // 알고리즘별 이 화면에서 돌린 횟수, 누적 실행 시간, 누적 확장 노드
+function renderUsage(res) {
+  const ran = res.filter(r => r.status === 'ok' && r.runtime_ms != null);
+  for (const r of ran) { const s = SESS[r.algo] = SESS[r.algo] || {runs: 0, ms: 0, exp: 0}; s.runs++; s.ms += +r.runtime_ms; s.exp += +r.expanded || 0; }
+  const u = $('usage'); u.replaceChildren();
+  const w = $('worst'); w.replaceChildren(); w.hidden = true;
+  const mx = (f) => Math.max(...ran.map(f), 1e-9);
+  const maxMs = mx(r => +r.runtime_ms), maxEx = mx(r => +r.expanded || 0);
+  for (const h of ['알고리즘', '실행 시간(ms)', '확장 노드(개)', '반복']) u.append(el('div', 'uh', h));
+  const slow = ran.length ? ran.reduce((a, b) => +b.runtime_ms > +a.runtime_ms ? b : a) : null;
+  const wide = ran.length ? ran.reduce((a, b) => (+b.expanded || 0) > (+a.expanded || 0) ? b : a) : null;
+  const bar = (val, max, txt, color, worst) => { const b = el('div', 'ubar' + (worst ? ' worst' : '')); b.style.setProperty('--c', color);
+    const i = el('i'); i.style.width = Math.max(2, 100 * val / max) + '%'; b.append(i, el('span', null, txt)); return b; };
+  for (const r of res) {
+    const n = el('div', 'un'); const dot = el('span', 'dot'); dot.style.background = ALGO_COLOR[r.algo]; n.append(dot, el('span', null, lbl(r)));
+    u.append(n);
+    if (!ran.includes(r)) { const t = el('div', 'unmark', r.status === 'not_implemented' ? '구현 대기 중이라 아직 측정값이 없습니다' : (STATUS_TEXT[r.status] || r.status) + ' — 측정값 없음'); u.append(t); continue; }
+    u.append(bar(+r.runtime_ms, maxMs, num(r.runtime_ms, 1) + ' ms', ALGO_COLOR[r.algo], ran.length > 1 && r === slow),
+      bar(+r.expanded || 0, maxEx, String(r.expanded), ALGO_COLOR[r.algo], ran.length > 1 && r === wide),
+      el('div', 'uit', r.iterations > 1 || r.algo === 'larac' ? r.iterations + '회' : '–'));
+  }
+  if (ran.length > 1) {
+    const fast = ran.reduce((a, b) => +b.runtime_ms < +a.runtime_ms ? b : a);
+    const ratio = +fast.runtime_ms > 0 ? ` (가장 빠른 ${lbl(fast)}의 ${num(+slow.runtime_ms / +fast.runtime_ms, 1)}배)` : '';
+    w.append(el('b', null, '가장 비효율적: ' + lbl(slow)), ` — 실행 ${num(slow.runtime_ms, 1)}ms${ratio}, 확장 노드 ${slow.expanded}개.`);
+    if (wide !== slow) w.append(` 탐색 노드가 가장 많은 쪽은 ${lbl(wide)}(${wide.expanded}개)입니다.`);
+    w.hidden = false;
+  }
+  const t = $('sess'); t.replaceChildren();
+  const hr = el('tr'); for (const h of ['알고리즘', '돌린 횟수', '누적 실행(ms)', '1회 평균(ms)', '누적 확장 노드']) hr.append(el('th', null, h)); t.append(hr);
+  const keys = ALGO_ORDER.filter(a => SESS[a]);
+  const worstAvg = keys.length > 1 ? keys.reduce((a, b) => SESS[b].ms / SESS[b].runs > SESS[a].ms / SESS[a].runs ? b : a) : null;
+  for (const a of keys) { const s = SESS[a], tr = el('tr'); if (a === worstAvg) tr.className = 'pos';
+    const td0 = el('td'); const d = el('span', 'dot'); d.style.background = ALGO_COLOR[a]; td0.append(d, ALGO_NAME[a] + (a === worstAvg ? '  (평균이 가장 느림)' : ''));
+    tr.append(td0, el('td', null, s.runs + '회'), el('td', null, num(s.ms, 1)), el('td', null, num(s.ms / s.runs, 1)), el('td', null, String(s.exp))); t.append(tr); }
+}
+
+let LAST = null;
+function render(data) {
+  LAST = data;
+  const res = data.results.slice().sort((a, b) => ALGO_ORDER.indexOf(a.algo) - ALGO_ORDER.indexOf(b.algo));
+  renderSummary(data, res);
+  renderUsage(res);
+  const keyOf = (r) => r.path ? r.path.join('|') : null;
+  const groups = {}; for (const r of res) { const k = keyOf(r); if (k) (groups[k] = groups[k] || []).push(lbl(r)); }
+  const cards = $('cards'); cards.replaceChildren(); const nodes = [];
+  for (const r of res) {
+    const same = groups[keyOf(r)] || [];
+    const gt = same.length > 1 ? '같은 경로: ' + same.filter(n => n !== lbl(r)).join(', ') : (r.path ? '이 알고리즘만 다른 경로를 냈습니다' : '');
+    const c = card(r, gt); nodes.push([r, c]);
+    const focus = () => { const was = c.getAttribute('aria-pressed') === 'true'; for (const [, cc] of nodes) cc.setAttribute('aria-pressed', 'false'); c.setAttribute('aria-pressed', String(!was)); drawRoutes(res, was ? '_all' : r.algo); };
+    c.onclick = (e) => { if (e.target.closest('details')) return; focus(); };
+    c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); focus(); } };
+    cards.append(c);
+  }
+  drawBase(); drawRoutes(res, '_all');
+  const lg = $('legend'); lg.replaceChildren();
+  for (const r of res) if (r.path) { const s = el('span'); const i = el('i'); i.style.background = ALGO_COLOR[r.algo]; s.append(i, lbl(r)); lg.append(s); }
+  lg.append(el('span', null, '카드를 누르면 그 경로만 강조됩니다'));
+  $('out').hidden = false;
+}
+
+/* ---------------- 점수 곡선 ---------------- */
+function drawCurve(d) {
+  const s = $('curve'); s.replaceChildren(); $('curveTitle').textContent = `${d.src} → ${d.dst}`;
+  const P = d.points; if (!P.length) { const t = svgEl('text', {x: 10, y: 30, fill: 'var(--muted)'}); t.textContent = '운행 가능한 시각이 없습니다'; s.append(t); return; }
+  const W = 620, H = 220, L = 42, R = 10, T = 12, B = 28;
+  const ys = P.flatMap(p => [p.cost_cheapest, p.cost_larac]); const y0 = Math.min(...ys) * .95, y1 = Math.max(...ys) * 1.05;
+  const X = (i) => L + (W - L - R) * i / Math.max(1, P.length - 1), Y = (v) => T + (H - T - B) * (1 - (v - y0) / (y1 - y0 || 1));
+  for (let k = 0; k <= 4; k++) { const v = y0 + (y1 - y0) * k / 4, y = Y(v);
+    s.append(svgEl('line', {x1: L, x2: W - R, y1: y, y2: y, stroke: 'var(--line)'}));
+    const t = svgEl('text', {x: L - 6, y: y + 4, 'text-anchor': 'end', 'font-size': 10, fill: 'var(--muted)'}); t.textContent = v.toFixed(0); s.append(t); }
+  P.forEach((p, i) => { if (i % 6 === 0) { const t = svgEl('text', {x: X(i), y: H - 8, 'text-anchor': 'middle', 'font-size': 10, fill: 'var(--muted)'}); t.textContent = p.time; s.append(t); } });
+  for (const [key, col] of [['cost_larac', ALGO_COLOR.larac], ['cost_cheapest', ALGO_COLOR.astar]])
+    s.append(svgEl('polyline', {points: P.map((p, i) => X(i) + ',' + Y(p[key])).join(' '), fill: 'none', stroke: col, 'stroke-width': 2.5}));
+  const tip = svgEl('text', {x: L + 4, y: T + 10, 'font-size': 11, fill: 'var(--fg)'}); s.append(tip);
+  const hit = svgEl('rect', {x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent'}); s.append(hit);
+  hit.addEventListener('mousemove', (e) => { const r = s.getBoundingClientRect(); const i = Math.round(((e.clientX - r.left) / r.width * W - L) / (W - L - R) * (P.length - 1)); const p = P[Math.max(0, Math.min(P.length - 1, i))];
+    tip.textContent = `${p.time}  점수 최소(A*) ${p.cost_cheapest}분 (실제 ${p.real_cheapest}분)  ·  LARAC ${p.cost_larac}분 (실제 ${p.real_larac}분)`; });
+  const lg = $('curveLegend'); lg.replaceChildren();
+  for (const [t, c] of [['점수 최소(A*)의 점수', ALGO_COLOR.astar], ['LARAC(허용 시간 안)의 점수', ALGO_COLOR.larac]]) { const sp = el('span'); const i = el('i'); i.style.background = c; sp.append(i, t); lg.append(sp); }
+}
+
+/* ---------------- 역 선택기 ---------------- */
+let LINES = [], ALL_NAMES = [], NAME_LINES = {};
+const PICK = {};
+function makePicker(id) {
+  const line = $(id + 'Line'), q = $(id + 'Search'), sel = $(id), cnt = $(id + 'Count');
+  line.replaceChildren(new Option(`전체 호선 (${ALL_NAMES.length}개 역)`, '__all'));
+  for (const L of LINES) line.append(new Option(`${L.label} (${L.stations.length}개 역)`, L.key));
+  function rebuild(keepName) {
+    const k = line.value, term = q.value.trim();
+    let names = k === '__all' ? ALL_NAMES : LINES.find(x => x.key === k).stations;
+    if (term) names = names.filter(n => n.includes(term));
+    const keep = keepName != null ? keepName : sel.value;
+    sel.replaceChildren();
+    for (const n of names) sel.append(new Option(k === '__all' ? `${n}  ·  ${NAME_LINES[n].join(', ')}` : n, n));
+    if (names.includes(keep)) sel.value = keep; else sel.selectedIndex = names.length ? 0 : -1;
+    const o = sel.selectedOptions[0]; if (o) sel.scrollTop = Math.max(0, o.offsetTop - sel.clientHeight / 2);
+    cnt.textContent = term ? `검색 결과 ${names.length}개 역` : `${names.length}개 역`;
+  }
+  line.onchange = () => rebuild(); q.oninput = () => rebuild();
+  return { set(name) { line.value = '__all'; q.value = ''; rebuild(name); } };
+}
+$('swap').onclick = () => { const a = $('src').value, b = $('dst').value; PICK.src.set(b); PICK.dst.set(a); };
+function syncAll() {
+  const boxes = [...document.querySelectorAll('#algos input[data-algo]')], all = $('algoAll');
+  const n = boxes.filter(b => b.checked).length;
+  all.checked = n === boxes.length; all.indeterminate = n > 0 && n < boxes.length;
+}
+
+/* ---------------- 검색 ---------------- */
+function query() {
+  return new URLSearchParams({src: $('src').value, dst: $('dst').value, day: $('day').value, time: $('time').value,
+    mode: $('mode').value, slack: $('slack').value, alpha: $('alpha').value,
+    algos: [...document.querySelectorAll('#algos input[data-algo]:checked')].map(i => i.value).join(',')});
+}
+async function search() {
+  $('err').textContent = '';
+  if (!$('src').value || !$('dst').value) { $('err').textContent = '출발역과 도착역을 목록에서 선택하세요.'; return; }
+  if (!document.querySelector('#algos input[data-algo]:checked')) { $('err').textContent = '비교할 알고리즘을 하나 이상 선택하세요.'; return; }
+  $('go').disabled = true; $('go').textContent = '찾는 중…';
+  try {
+    const p = query();
+    const data = await getJSON('/api/route?' + p);
+    render(data);
+    try { history.replaceState(null, '', '?' + p.toString() + location.hash); } catch (e) {}
+    const cp = new URLSearchParams({src: p.get('src'), dst: p.get('dst'), day: p.get('day'), alpha: p.get('alpha'), slack: p.get('slack')});
+    getJSON('/api/curve?' + cp).then(drawCurve).catch(() => {});
+  } catch (err) { $('err').textContent = err.message; }
+  finally { $('go').disabled = false; $('go').textContent = '경로 찾기'; }
+}
+$('form').onsubmit = (e) => { e.preventDefault(); search(); };
+document.querySelectorAll('.ex').forEach(b => b.onclick = () => {
+  const [s, d, day, t] = b.dataset.ex.split('|'); PICK.src.set(s); PICK.dst.set(d); $('day').value = day; $('time').value = t; search();
+});
+
+/* ---------------- 실험 결과 ---------------- */
+function fmtPct(v) { return v == null || v === '' ? '–' : (+v).toFixed(2) + '%'; }
+function renderSummaryTable(rows, group) {
+  const t = $('summary'); t.replaceChildren();
+  const cols = [['algo', '알고리즘', ''], ['n_ok', '질의 수', '결과가 나온 질의 수'], ['exact_pct', '정확', '정답 기준과 점수가 같은 비율'], ['gap_mean_pct', '오차 평균', '정답 기준 대비 점수가 큰 정도의 평균'], ['gap_max_pct', '오차 최대', ''],
+    ['feasible_pct', '허용 시간 이내', '실제 시간이 최단+허용 여유 이내인 비율'], ['runtime_ms_median', '실행(ms)', '5회 중앙값'], ['runtime_warm_ms_median', 'warm(ms)', '하한을 재사용할 때'], ['expanded_mean', '확장 노드', ''], ['iterations_mean', '반복', ''], ['bound_active_pct', '제약 활성', 'LARAC에서 허용 시간 제약이 걸린 비율'], ['real_mean_min', '실제(분)', ''], ['cost_A_mean_min', '점수 A(분)', '']];
+  const hr = el('tr'); cols.forEach(([, n, tt]) => { const th = el('th', null, n); if (tt) th.title = tt; hr.append(th); }); t.append(hr);
+  const pct = new Set(['exact_pct', 'feasible_pct', 'bound_active_pct']);
+  for (const a of ALGO_ORDER) {
+    const r = rows.find(x => x.group === group && x.algo === a); if (!r) continue;
+    const tr = el('tr');
+    cols.forEach(([k]) => {
+      let v; if (k === 'algo') { const td = el('td'); const dot = el('span', 'dot'); dot.style.background = ALGO_COLOR[a]; td.append(dot, ALGO_NAME[a]); tr.append(td); return; }
+      else if (a === 'ga' && +r.n_ok === 0) v = k === 'n_ok' ? '구현 대기' : '–';
+      else if (k === 'gap_mean_pct' || k === 'gap_max_pct') v = fmtPct(r[k]);
+      else if (pct.has(k)) v = r[k] === '' ? '–' : (+r[k]).toFixed(1) + '%';
+      else v = r[k] === '' || r[k] == null ? '–' : (isNaN(+r[k]) ? r[k] : (+r[k] % 1 ? (+r[k]).toFixed(2) : r[k]));
+      tr.append(el('td', null, v));
+    });
+    t.append(tr);
+  }
+}
+function renderMd(md, host) {
+  host.replaceChildren(); let table = null;
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd();
+    if (line.startsWith('# ')) continue;
+    if (line.startsWith('## ')) { table = null; const h = el('h2', null, line.slice(3)); h.style.margin = '16px 0 8px'; host.append(h); continue; }
+    if (line.startsWith('|')) {
+      const cells = line.split('|').slice(1, -1).map(s => s.trim());
+      if (cells.every(c => /^-+$/.test(c))) continue;
+      if (!table) { const w = el('div', 'tw'); table = el('table'); w.append(table); host.append(w); const tr = el('tr'); cells.forEach(c => tr.append(el('th', null, c))); table.append(tr); }
+      else { const tr = el('tr'); cells.forEach((c, i) => { const td = el('td', null, c); if (i === cells.length - 1) { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } tr.append(td); }); table.append(tr); }
+    }
+  }
+  if (!host.childNodes.length) host.append(el('p', 'muted', '실험 결과가 아직 없습니다.'));
+}
+async function loadResults() {
+  try {
+    const d = await getJSON('/api/results');
+    $('meta').textContent = d.meta || '실험 결과가 아직 없습니다. python -m experiments.run 으로 만드세요.';
+    const groups = [...new Set(d.summary.map(r => r.group))];
+    const gname = {random: '무작위 OD', line2: '2호선 위주', line5: '5호선 위주'};
+    const gt = $('grpTabs'); gt.replaceChildren();
+    groups.forEach((g, i) => { const b = el('button', null, gname[g] || g); b.type = 'button'; b.setAttribute('aria-pressed', String(i === 0));
+      b.onclick = () => { [...gt.children].forEach(x => x.setAttribute('aria-pressed', 'false')); b.setAttribute('aria-pressed', 'true'); renderSummaryTable(d.summary, g); }; gt.append(b); });
+    if (groups.length) renderSummaryTable(d.summary, groups[0]);
+    const f = $('figs'); f.replaceChildren();
+    const order = Object.keys(FIG_CAP);
+    d.figs.sort((a, b) => (order.indexOf(a.file) + 100) % 100 - (order.indexOf(b.file) + 100) % 100);
+    for (const x of d.figs) { const cap = FIG_CAP[x.file] || [x.file, '']; const fig = el('figure'); const im = el('img'); im.src = '/results/' + x.file; im.alt = cap[0]; im.loading = 'lazy';
+      fig.append(im, el('figcaption', null, cap[0])); if (cap[1]) { const h = el('div', 'how'); const p = el('p'); const bb = el('b', null, '읽는 법 '); p.append(bb, cap[1]); h.append(p); fig.append(h); } f.append(fig); }
+    const s = $('sens'); s.replaceChildren();
+    const hr = el('tr'); ['ALPHA', 'slack(초)', 'OD 수', 'LARAC가 최단시간과 다른 OD', '점수 최소가 최단시간과 다른 OD', '제약 활성'].forEach(n => hr.append(el('th', null, n))); s.append(hr);
+    for (const r of d.sensitivity) { const tr = el('tr'); [r.alpha, r.slack_sec, r.n_od, fmtPct(r.larac_differs_pct), fmtPct(r.cost_min_differs_pct), fmtPct(r.bound_active_pct)].forEach(v => tr.append(el('td', null, v))); s.append(tr); }
+    renderMd(d.path_compare || '', $('pc'));
+  } catch (e) { $('meta').textContent = '불러오지 못했습니다: ' + e.message; }
+}
+
+
+/* ---------------- 내가 고른 호선의 결과 ---------------- */
+const fmt1 = (v, d = 1) => v == null ? '–' : (+v).toFixed(d);
+async function runLineExperiment(e) {
+  e.preventDefault();
+  const go = $('xGo'), err = $('xErr'); err.textContent = ''; go.disabled = true; go.textContent = '계산 중…';
+  try {
+    const p = new URLSearchParams({line: $('xLine').value, day: $('xDay').value, time: $('xTime').value.trim(), n: $('xN').value,
+      mode: $('mode').value, slack: $('slack').value, alpha: $('alpha').value});
+    renderLineExperiment(await getJSON('/api/line_experiment?' + p));
+  } catch (ex) { err.textContent = '실험 오류: ' + ex.message; err.style.cssText = 'margin-top:10px;color:var(--bad);font-weight:600'; $('xOut').hidden = true; }
+  finally { go.disabled = false; go.textContent = '이 호선 결과 보기'; }
+}
+function renderLineExperiment(d) {
+  const st = d.stats.filter(x => x.n > 0);
+  const v = $('xVerdict'); v.replaceChildren();
+  const dayN = {weekday: '평일', sat: '토요일', sun: '일요일'}[d.day] || d.day;
+  v.append(el('b', null, `${d.label} · ${dayN} ${d.time} 출발 · ${d.n_pairs}쌍`), ' 결과입니다.');
+  if (st.length) {
+    const slow = st.reduce((a, b) => b.runtime_ms_median > a.runtime_ms_median ? b : a);
+    const worstGap = st.reduce((a, b) => (b.gap_mean_pct || 0) > (a.gap_mean_pct || 0) ? b : a);
+    v.append(` 실행이 가장 오래 걸린 알고리즘(가장 비효율적)은 `, el('b', null, slow.label), ` (중앙값 ${fmt1(slow.runtime_ms_median, 2)}ms, 확장 노드 평균 ${fmt1(slow.expanded_mean)}개)입니다.`);
+    if ((worstGap.gap_mean_pct || 0) > 1e-9) v.append(` 점수가 정답 기준에서 가장 멀었던 쪽은 `, el('b', null, worstGap.label), ` (평균 +${fmt1(worstGap.gap_mean_pct, 3)}%, 최대 +${fmt1(worstGap.gap_max_pct, 3)}%)입니다.`);
+    else v.append(' 모든 알고리즘이 정답 기준과 같은 점수를 냈습니다.');
+  } else v.append(' 이 조건에서는 결과가 나온 쌍이 없습니다.');
+  const t = $('xStats'); t.replaceChildren();
+  const heads = [['알고리즘', ''], ['질의 수', '결과가 나온 쌍 수'], ['정확', '정답 기준과 점수가 같은 비율'], ['오차 평균', ''], ['오차 최대', ''], ['허용 시간 이내', ''],
+    ['실행 중앙값(ms)', '쌍마다 3회 중앙값의 중앙값'], ['실행 합계(ms)', ''], ['확장 노드 평균', ''], ['실제 평균(분)', ''], ['점수 평균(분)', '']];
+  const hr = el('tr'); for (const [h, tt] of heads) { const th = el('th', null, h); if (tt) th.title = tt; hr.append(th); } t.append(hr);
+  const slowKey = st.length > 1 ? st.reduce((a, b) => b.runtime_ms_median > a.runtime_ms_median ? b : a).algo : null;
+  for (const r of d.stats) {
+    const tr = el('tr'); if (r.algo === slowKey) tr.className = 'pos';
+    const td0 = el('td'); const dot = el('span', 'dot'); dot.style.background = ALGO_COLOR[r.algo]; td0.append(dot, ALGO_NAME[r.algo] + (r.algo === slowKey ? '  (가장 느림)' : '')); tr.append(td0);
+    if (!r.n) { const td = el('td', 'muted', '결과 없음'); td.colSpan = heads.length - 1; td.style.textAlign = 'left'; tr.append(td); t.append(tr); continue; }
+    for (const x of [r.n, fmt1(r.exact_pct) + '%', '+' + fmt1(r.gap_mean_pct, 3) + '%', '+' + fmt1(r.gap_max_pct, 3) + '%', fmt1(r.feasible_pct) + '%',
+      fmt1(r.runtime_ms_median, 2), fmt1(r.runtime_ms_total), fmt1(r.expanded_mean), fmt1(r.real_mean_min), fmt1(r.cost_mean_min)]) tr.append(el('td', null, String(x)));
+    t.append(tr);
+  }
+  const pt = $('xPairs'); pt.replaceChildren();
+  const algos = d.stats.map(x => x.algo);
+  const ph = el('tr'); ['출발', '도착', ...algos.map(a => ALGO_NAME[a] + ' 점수/실제(분)'), '정답 기준과 다른 알고리즘'].forEach(h => ph.append(el('th', null, h))); pt.append(ph);
+  let diff = 0;
+  for (const r of d.pairs) {
+    const tr = el('tr'); tr.append(el('td', null, r.src), el('td', null, r.dst));
+    const ref = r.ref; const bad = [];
+    for (const a of algos) { const x = r[a]; tr.append(el('td', null, x ? `${fmt1(x.cost_min)} / ${fmt1(x.real_min)}` : '–'));
+      if (a !== 'ref' && x && ref && x.cost_min - ref.cost_min > 0.005) bad.push(ALGO_NAME[a]); }
+    if (bad.length) diff++;
+    const last = el('td', bad.length ? 'pos' : 'muted', bad.length ? bad.join(', ') : '모두 같음'); last.style.textAlign = 'left'; tr.append(last); pt.append(tr);
+  }
+  $('xPairNote').textContent = `(${d.n_pairs}쌍 중 ${diff}쌍에서 정답 기준과 점수가 다름)`;
+  $('xOut').hidden = false;
+}
+$('lineForm').addEventListener('submit', runLineExperiment);
+
+/* ---------------- 시작 ---------------- */
+(async function init() {
+  const al = $('algos'), allI = $('algoAll');
+  allI.onchange = () => { document.querySelectorAll('#algos input[data-algo]').forEach(b => { b.checked = allI.checked; }); syncAll(); };
+  for (const a of ALGO_ORDER) {
+    const l = el('label', 'algo'); l.style.setProperty('--c', ALGO_COLOR[a]);
+    const i = el('input'); i.type = 'checkbox'; i.value = a; i.dataset.algo = a; i.checked = a !== 'ga'; i.onchange = syncAll;
+    const box = el('div'); box.append(el('b', null, ALGO_NAME[a]), el('span', null, ALGO_DESC[a])); l.append(i, box); al.append(l);
+  }
+  syncAll();
+  try {
+    const [st, lines, geo] = await Promise.all([getJSON('/api/stations'), getJSON('/api/lines'), getJSON('/api/geo')]);
+    ALL_NAMES = st.map(s => s.name).sort((a, b) => a.localeCompare(b, 'ko'));
+    NAME_LINES = Object.fromEntries(st.map(s => [s.name, s.lines]));
+    LINES = lines;
+    PICK.src = makePicker('src'); PICK.dst = makePicker('dst');
+    PICK.src.set('개화'); PICK.dst.set('중앙보훈병원');
+    GEO = geo; buildProjection(); drawBase();
+    // 주소의 ?src=..&dst=..&day=..&time=.. 로 바로 결과를 열 수 있다 (링크 공유용)
+    const q = new URLSearchParams(location.search);
+    if (q.get('src') && q.get('dst')) {
+      PICK.src.set(q.get('src')); PICK.dst.set(q.get('dst'));
+      for (const k of ['day', 'time', 'mode', 'slack', 'alpha']) if (q.get(k)) $(k).value = q.get(k);
+      if (q.get('algos')) { const on = new Set(q.get('algos').split(',')); document.querySelectorAll('#algos input[data-algo]').forEach(b => { b.checked = on.has(b.value); }); syncAll(); }
+      search();
+    }
+  } catch (e) { showError('초기화 실패: ' + e.message); }
+  if (location.hash === '#results') {
+    showTab('results');
+    const xl = new URLSearchParams(location.search).get('xline');      // 주소에 ?xline=5 를 붙이면 그 호선 결과를 바로 연다
+    if (xl && [...$('xLine').options].some(o => o.value === xl)) { $('xLine').value = xl; runLineExperiment({preventDefault() {}}); }
+  }
+})();
+</script>
+</body>
+</html>
