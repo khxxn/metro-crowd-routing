@@ -1,0 +1,16 @@
+# 빌드 결과
+*.exe
+*.patch
+# 가상 노선망 CSV (tools/gen_synthetic으로 언제든 다시 만들 수 있다)
+data_syn/
+# 로컬에만 두는 예전 파일 (route_server.cpp로 대체됨, data/와 중복)
+data.zip
+실제값기반/
+route_cmp.cpp
+test.cpp
+test_win.cpp
+# 배포 설정 (사용 안 함, 로컬에만 둠)
+Dockerfile
+.dockerignore
+docker-compose.yml
+DEPLOY.md
