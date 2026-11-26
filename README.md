@@ -18,8 +18,6 @@ C++ 파일 하나(`route_server.cpp`)가 경로 계산과 지도 화면 제공�
 | `tests/route_ga_test.cpp` | GA 테스트 (Susu) |
 | `tools/synthetic.h` | 가상 격자 노선망 생성기. 실제 데이터의 혼잡도·탑승 시간·환승 값을 복사해, 크기를 마음대로 키운 노선망을 만든다 |
 | `tools/gen_synthetic.cpp` | 생성기를 실행해 `data/`와 같은 형식의 CSV 4개로 저장하는 프로그램 |
-| `Dockerfile`, `.dockerignore`, `docker-compose.yml` | Docker 이미지 빌드·실행 설정 |
-| `DEPLOY.md` | Docker로 내 컴퓨터, 클라우드, AWS에 배포하는 방법 |
 
 ## 실행
 
@@ -92,7 +90,3 @@ g++ -O2 -std=c++17 -static tools/gen_synthetic.cpp -o gen_synthetic -lws2_32
 g++ -O2 -std=c++17 tests/route_check_test.cpp -o route_check_test -lws2_32 && ./route_check_test data   # 검증 값·막차·A*와 다익스트라
 g++ -O2 -std=c++17 tests/route_ga_test.cpp -o route_ga_test -lws2_32 && ./route_ga_test data           # Susu의 GA 테스트
 ```
-
-## 배포
-
-Docker로 배포하는 방법은 [DEPLOY.md](DEPLOY.md)에 있다. 요약: `docker compose up --build` 후 `http://localhost:8080`.

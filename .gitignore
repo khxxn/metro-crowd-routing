@@ -9,3 +9,8 @@ data.zip
 route_cmp.cpp
 test.cpp
 test_win.cpp
+# 배포 설정 (사용 안 함, 로컬에만 둠)
+Dockerfile
+.dockerignore
+docker-compose.yml
+DEPLOY.md
