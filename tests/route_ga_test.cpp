@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
         for (const string& algorithm : {string("dijkstra"), string("astar"), string("ga")}) {
             string log;
             string response = handle(app, "GET /api/route?from=N0&to=N1&day=weekday&time=08:00&algorithm=" + algorithm + " HTTP/1.1\r\n\r\n", log);
-            auto run = algorithm == "ga" ? route_ga : algorithm == "astar" ? route_astar : route;
+            auto run = algorithm == "ga" ? route_ga : algorithm == "astar" ? route_astar : route_dijkstra;
             check(response.find("HTTP/1.1 200 OK") == 0, "algorithm API status");
             check(response.find("\"algorithm\":\"" + algorithm + "\"") != string::npos, "algorithm API selection");
             check(response.find("\"f\":" + json_result(run(app.D, "N0", "N1", WEEKDAY, 8 * 3600, true))) != string::npos, "API time objective dispatch");
@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
             for (int depart : {FIRST_SEC - 60, FIRST_SEC + 120}) {
                 Result r = route_ga(service, "N0", "N1", WEEKDAY, depart, by_real);
                 check(!r.found && r.no_train && !r.search_limited, "closed service metadata");
-                check(r.origin_last == route(service, "N0", "N1", WEEKDAY, depart, by_real).origin_last, "origin last departure");
+                check(r.origin_last == route_dijkstra(service, "N0", "N1", WEEKDAY, depart, by_real).origin_last, "origin last departure");
             }
             service.ride[0][0].first[WEEKDAY] = 23 * 3600;
             service.ride[0][0].last[WEEKDAY] = 25 * 3600;
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
                     const auto& from = actual.name[i]; const auto& to = actual.name[(i + actual.name.size() / 3) % actual.name.size()];
                     for (bool by_real : {false, true}) {
                         Result r = route_ga(actual, from, to, day, depart, by_real);
-                        Result baseline = route(actual, from, to, day, depart, by_real);
+                        Result baseline = route_dijkstra(actual, from, to, day, depart, by_real);
                         if (r.found) validate(actual, r, from, to, day, depart);
                         else check(r.search_limited || !baseline.found, "missed a feasible real-data route without search-limit status");
                         if (r.found && baseline.found && r.path != baseline.path) differences++;
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
                 int day = sample % 3, depart = (sample % 2 ? 17 : 7) * 3600 + samples() % 7200;
                 for (bool by_real : {false, true}) {
                     Result r = route_ga(actual, from, to, day, depart, by_real);
-                    Result baseline = route(actual, from, to, day, depart, by_real);
+                    Result baseline = route_dijkstra(actual, from, to, day, depart, by_real);
                     if (r.found) validate(actual, r, from, to, day, depart);
                     else check(r.search_limited || !baseline.found, "missed a feasible sampled route without search-limit status");
                     if (r.found && baseline.found && r.path != baseline.path) differences++;

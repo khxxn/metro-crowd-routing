@@ -290,103 +290,123 @@ struct Result {
     long expanded = 0;    // 우선순위 큐에서 꺼내 펼친 상태 수. 탐색량 비교용이며 GA는 세지 않는다
 };
 
-// ---------- 다익스트라 / A* 공통 탐색 (방식 B) ----------
-// 간선 가중치 = ws × 점수 + wr × 실제 시간. (1, 0) = 점수 최소, (0, 1) = 최단 시간.
-// 상태는 (역 노드, 열차를 탄 채로 왔나) 두 가지다. 같은 노드라도 환승해서 온 경우는 다음 열차의 막차·첫차를
+// ---------- 공통: 탐색 기록과 이동 규칙 (방식 B) ----------
+// 다익스트라와 A*가 같이 쓰는 것은 "지하철 규칙"(어디로 갈 수 있고 비용이 얼마인가)과 기록·경로 복원뿐이다.
+// 탐색 순서(우선순위 큐에 무엇을 넣나)는 route_dijkstra와 route_astar에 각각 따로 있다.
+//
+// 상태 = 역 노드 × 2 + (열차를 탄 채로 왔으면 1). 같은 노드라도 환승해서 온 경우는 다음 열차의 막차·첫차를
 // 확인하고, 계속 타고 온 경우는 확인하지 않아서 갈 수 있는 곳이 다르다. 노드마다 기록을 하나만 두면
 // 심야에 "환승해서 온 더 빠른 기록"이 막차에 막혀 경로가 크게 돌아가는 문제가 있어 둘로 나눴다.
-// H가 0이 아니면 우선순위를 g + h로 쓰는 A*가 된다(h는 노드별 남은 가중치의 하한).
-// H(노드)는 남은 가중치의 하한을 돌려주는 함수다. 다익스트라는 항상 0, A*는 랜드마크·직선거리 하한.
-template <class HF>
-Result search_h(const Data& D, const string& from, const string& to, int day, int depart_sec, double ws, double wr, HF H) {
-    int n = (int)D.id.size(), S = 2 * n;   // 상태 번호 = 노드 * 2 + (탑승 중이면 1)
-    vector<double> key(S, 1e18), real(S, 0), sco(S, 0), s_real(S, 0), s_score(S, 0), s_cong(S, 0);
-    vector<int> prev(S, -1);
-    vector<char> s_type(S, 0), done(S, 0);
-    bool no_train = false; int origin_last = -1; long expanded = 0;
-    using Q = pair<double, int>;   // {g + h, 상태}
-    priority_queue<Q, vector<Q>, greater<Q>> pq;
-    for (int s : D.by_name.at(from)) {
-        if (H(s) >= 1e17) continue;   // 도착역에 닿을 수 없는 노드
-        key[2 * s] = 0; pq.push({H(s), 2 * s});
-    }
-    vector<char> is_dst(n, 0);
-    for (int d : D.by_name.at(to)) is_dst[d] = 1;
 
-    while (!pq.empty()) {
-        int st = pq.top().second; pq.pop();
-        if (done[st]) continue;
-        done[st] = 1;
-        int u = st / 2; bool aboard = st & 1; double g = key[st];
-        if (is_dst[u]) {
-            Result r; r.found = true; r.score = sco[st]; r.real = real[st]; r.expanded = expanded;
-            vector<int> chain;
-            for (int x = st; x != -1; x = prev[x]) chain.push_back(x);
-            reverse(chain.begin(), chain.end());
-            for (size_t i = 0; i < chain.size(); i++) {
-                int x = chain[i];
-                r.path.push_back(x / 2);
-                if (i) r.steps.push_back({s_type[x], chain[i - 1] / 2, x / 2, s_real[x], s_score[x], s_cong[x]});
+// 상태마다 지금까지의 최소 가중치(key)와 경로 복원용 기록
+struct Labels {
+    vector<double> key, real, sco, s_real, s_score, s_cong;
+    vector<int> prev;
+    vector<char> s_type, done;
+    explicit Labels(int S)
+        : key(S, 1e18), real(S, 0), sco(S, 0), s_real(S, 0), s_score(S, 0), s_cong(S, 0), prev(S, -1), s_type(S, 0), done(S, 0) {}
+};
+
+// 이동 한 번(탑승 한 구간 또는 환승 한 번). to = 도착 상태, type 1 = 탑승, 0 = 환승
+struct Move { int to; double real, score, cong; int type; };
+
+// 상태 st에서 할 수 있는 이동을 하나씩 f(Move)로 넘긴다. 시간대는 이 상태에 도착한 시각으로 다시 찾는다(방식 B).
+// 새로 타는 열차는 첫차·막차를, 환승은 그 시간대 운행 여부(NO_SERVICE)를 확인하고, 막힌 이동은 no_train에 남긴다.
+template <class F>
+void for_each_move(const Data& D, const Labels& L, int st, int day, int depart_sec, bool& no_train, int& origin_last, F f) {
+    int u = st / 2; bool aboard = st & 1;
+    int now = depart_sec + (int)L.real[st];   // 이 노드에 도착한(타려는) 시각
+    int slot = slot_of(now);
+    for (const auto& e : D.ride[u]) {
+        if (!aboard) {   // 새로 타는 열차만 첫차·막차를 확인한다
+            int t = clock_of(now);
+            if (t < e.first[day] || t > e.last[day]) {
+                no_train = true;
+                if (L.prev[st] < 0 && t > e.last[day]) origin_last = max(origin_last, e.last[day]);
+                continue;
             }
-            return r;
         }
-        expanded++;
-        int now = depart_sec + (int)real[st];   // 이 노드에 도착한(타려는) 시각
-        int slot = slot_of(now);
-        auto relax = [&](int ns, double dr, double ds, int type, double c) {
-            if (done[ns]) return;
-            double hv = H(ns / 2);
-            if (hv >= 1e17) return;
-            double ng = g + ws * ds + wr * dr;
-            if (ng < key[ns]) {
-                key[ns] = ng; real[ns] = real[st] + dr; sco[ns] = sco[st] + ds; prev[ns] = st;
-                s_type[ns] = type; s_real[ns] = dr; s_score[ns] = ds; s_cong[ns] = c;
-                pq.push({ng + hv, ns});
-            }
-        };
-        for (const auto& e : D.ride[u]) {
-            if (!aboard) {   // 새로 타는 열차만 첫차·막차를 확인한다
-                int t = clock_of(now);
-                if (t < e.first[day] || t > e.last[day]) {
-                    no_train = true;
-                    if (prev[st] < 0 && t > e.last[day]) origin_last = max(origin_last, e.last[day]);
-                    continue;
-                }
-            }
-            double c = D.cong[e.e][day][slot];
-            relax(2 * e.to + 1, e.sec, ride_cost(e.sec, c), 1, c);
-        }
-        for (const auto& e : D.tr[u]) {
-            const TrVal& v = D.trv[e.e][day][slot];
-            if (!v.ok) { no_train = true; continue; }   // NO_SERVICE: 그 시간대에는 갈아탈 수 없다
-            relax(2 * e.to, v.walk + v.wait, v.cost, 0, 0);
-        }
+        double c = D.cong[e.e][day][slot];
+        f(Move{2 * e.to + 1, (double)e.sec, ride_cost(e.sec, c), c, 1});
     }
-    Result none; none.no_train = no_train; none.origin_last = origin_last; none.expanded = expanded;
-    return none;
+    for (const auto& e : D.tr[u]) {
+        const TrVal& v = D.trv[e.e][day][slot];
+        if (!v.ok) { no_train = true; continue; }   // NO_SERVICE: 그 시간대에는 갈아탈 수 없다
+        f(Move{2 * e.to, v.walk + v.wait, v.cost, 0, 0});
+    }
 }
 
-Result search(const Data& D, const string& from, const string& to, int day, int depart_sec, double ws, double wr) {
-    return search_h(D, from, to, day, depart_sec, ws, wr, [](int) { return 0.0; });   // h = 0이면 다익스트라
+// st를 거쳐 m.to로 가는 길(가중치 ng)이 지금 기록보다 싸면 기록을 바꾸고 true
+bool improve(Labels& L, int st, const Move& m, double ng) {
+    int v = m.to;
+    if (L.done[v] || ng >= L.key[v]) return false;
+    L.key[v] = ng; L.real[v] = L.real[st] + m.real; L.sco[v] = L.sco[st] + m.score; L.prev[v] = st;
+    L.s_type[v] = (char)m.type; L.s_real[v] = m.real; L.s_score[v] = m.score; L.s_cong[v] = m.cong;
+    return true;
 }
+
+// 도착 상태 goal에서 prev를 거꾸로 따라가 경로를 만든다
+Result trace(const Labels& L, int goal, long expanded) {
+    Result r; r.found = true; r.score = L.sco[goal]; r.real = L.real[goal]; r.expanded = expanded;
+    vector<int> chain;
+    for (int x = goal; x != -1; x = L.prev[x]) chain.push_back(x);
+    reverse(chain.begin(), chain.end());
+    for (size_t i = 0; i < chain.size(); i++) {
+        int x = chain[i];
+        r.path.push_back(x / 2);
+        if (i) r.steps.push_back({L.s_type[x], chain[i - 1] / 2, x / 2, L.s_real[x], L.s_score[x], L.s_cong[x]});
+    }
+    return r;
+}
+
+Result not_found(bool no_train, int origin_last, long expanded) {
+    Result r; r.no_train = no_train; r.origin_last = origin_last; r.expanded = expanded;
+    return r;
+}
+
+Result route_dijkstra(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real);
 
 // 방식 B에서 상태마다 기록을 하나만 두기 때문에, 아주 드물게(심야의 긴 이동) 점수가 낮은 기록이 막차에 막혀
 // 점수 최소 탐색이 경로를 못 찾는 경우가 있다. 그때는 실제로 갈 수 있는 최단 시간 경로를 대신 돌려준다.
 Result with_fallback(Result r, const Data& D, const string& from, const string& to, int day, int depart_sec) {
     if (r.found) return r;
-    Result fast = search(D, from, to, day, depart_sec, 0, 1);
+    Result fast = route_dijkstra(D, from, to, day, depart_sec, true);
     if (!fast.found) return r;
     fast.expanded += r.expanded;
     return fast;
 }
 
+// ---------- 다익스트라 (main 브랜치, khxxn) ----------
+// 우선순위 = 출발부터 지금까지의 가중치 g. 가장 작은 상태부터 확정하고, 도착역 상태를 꺼내는 순간 끝낸다.
 // by_real = true: 실제 소요시간 최소(일반 최단시간), false: 점수(혼잡 반영 비용) 최소.
-Result route(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
-    if (by_real) return search(D, from, to, day, depart_sec, 0, 1);
-    return with_fallback(search(D, from, to, day, depart_sec, 1, 0), D, from, to, day, depart_sec);
+Result route_dijkstra(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
+    double ws = by_real ? 0 : 1, wr = by_real ? 1 : 0;   // 간선 가중치 = ws × 점수 + wr × 실제 시간
+    int n = (int)D.id.size();
+    Labels L(2 * n);
+    vector<char> is_dst(n, 0);
+    for (int d : D.by_name.at(to)) is_dst[d] = 1;
+    bool no_train = false; int origin_last = -1; long expanded = 0; int goal = -1;
+
+    using Q = pair<double, int>;   // {g, 상태}
+    priority_queue<Q, vector<Q>, greater<Q>> pq;
+    for (int s : D.by_name.at(from)) { L.key[2 * s] = 0; pq.push({0, 2 * s}); }
+    while (!pq.empty()) {
+        int st = pq.top().second; pq.pop();
+        if (L.done[st]) continue;
+        L.done[st] = 1;
+        if (is_dst[st / 2]) { goal = st; break; }
+        expanded++;
+        for_each_move(D, L, st, day, depart_sec, no_train, origin_last, [&](const Move& m) {
+            double ng = L.key[st] + ws * m.score + wr * m.real;
+            if (improve(L, st, m, ng)) pq.push({ng, m.to});              // 우선순위 = g
+        });
+    }
+    Result r = goal >= 0 ? trace(L, goal, expanded) : not_found(no_train, origin_last, expanded);
+    return by_real ? r : with_fallback(r, D, from, to, day, depart_sec);
 }
 
 // ---------- A* (Susu 브랜치, 휴리스틱을 바꿈) ----------
+// 다익스트라와 탐색 모양은 같고, 우선순위가 g + h라는 것만 다르다. h(u) = u에서 도착역까지 남은 가중치의 하한.
 // 원래(Susu)는 질의마다 도착역에서 거꾸로 다익스트라를 그래프 전체에 돌려 h를 구했다. h는 정확했지만 그 준비 비용이
 // 본 탐색보다 커서 A*가 다익스트라보다 느렸다. 지금은 질의마다 드는 준비 없이 두 가지 하한 중 큰 값을 h로 쓴다.
 //   1) 랜드마크(ALT): 랜드마크 L마다 삼각부등식으로  d(u,t) ≥ d(u,L) − d(t,L),  d(u,t) ≥ d(L,t) − d(L,u)
@@ -395,21 +415,24 @@ Result route(const Data& D, const string& from, const string& to, int day, int d
 // 실제 간선 비용 ≥ 하한 그래프의 간선 비용이므로 두 h 모두 남은 비용을 넘지 않고(admissible) 간선마다
 // h(u) ≤ w(u→v) + h(v) 가 성립한다(consistent). 둘 중 큰 값도 같은 성질을 가져서 다익스트라와 같은 답을 낸다.
 // 도착역 노드가 여러 개(환승역)면 노드마다 하한을 구해 가장 작은 값을 쓴다.
-Result route_astar(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
-    double ws = by_real ? 0 : 1, wr = by_real ? 1 : 0;
-    int t = by_real ? 1 : 0;   // 하한 표 종류: 0 = 점수, 1 = 실제 시간
-    const vector<int>& dst = D.by_name.at(to);
-    bool has_geo = D.px.size() == D.id.size() && D.vmax > 0;   // 좌표 없이 직접 만든 그래프(테스트)면 직선거리 h는 0
-    int L = (int)D.landmarks.size();
-    // 도착 노드마다 랜드마크 거리를 미리 꺼내 둔다(질의당 L × 도착 노드 수 개)
-    vector<vector<pair<double, double>>> dl(dst.size(), vector<pair<double, double>>(L));
-    for (size_t i = 0; i < dst.size(); i++)
-        for (int l = 0; l < L; l++) dl[i][l] = {D.lm_to[t][l][dst[i]], D.lm_from[t][l][dst[i]]};
-    auto H = [&](int u) {
+struct LowerBound {
+    const Data& D;
+    int t;                 // 하한 표 종류: 0 = 점수, 1 = 실제 시간
+    bool has_geo;          // 좌표 없이 직접 만든 그래프(테스트)면 직선거리 하한은 0
+    vector<int> dst;
+    vector<vector<pair<double, double>>> dl;   // 도착 노드마다 (d(t,L), d(L,t))를 미리 꺼내 둔다
+    LowerBound(const Data& D_, const string& to, bool by_real) : D(D_), t(by_real ? 1 : 0), dst(D_.by_name.at(to)) {
+        has_geo = D.px.size() == D.id.size() && D.vmax > 0;
+        int nl = (int)D.landmarks.size();
+        dl.assign(dst.size(), vector<pair<double, double>>(nl));
+        for (size_t i = 0; i < dst.size(); i++)
+            for (int l = 0; l < nl; l++) dl[i][l] = {D.lm_to[t][l][dst[i]], D.lm_from[t][l][dst[i]]};
+    }
+    double operator()(int u) const {
         double best = 1e18;
         for (size_t i = 0; i < dst.size(); i++) {
             double lb = has_geo ? hypot(D.px[u] - D.px[dst[i]], D.py[u] - D.py[dst[i]]) / D.vmax : 0;
-            for (int l = 0; l < L; l++) {
+            for (size_t l = 0; l < dl[i].size(); l++) {
                 double ul = D.lm_to[t][l][u], lu = D.lm_from[t][l][u];
                 auto [tl, lt] = dl[i][l];
                 if (ul < 1e17 && tl < 1e17) lb = max(lb, ul - tl);   // d(u,L) − d(t,L)
@@ -419,8 +442,40 @@ Result route_astar(const Data& D, const string& from, const string& to, int day,
             best = min(best, lb);
         }
         return best;
-    };
-    Result r = search_h(D, from, to, day, depart_sec, ws, wr, H);
+    }
+};
+
+Result route_astar(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
+    double ws = by_real ? 0 : 1, wr = by_real ? 1 : 0;   // 간선 가중치 = ws × 점수 + wr × 실제 시간
+    LowerBound h(D, to, by_real);
+    int n = (int)D.id.size();
+    Labels L(2 * n);
+    vector<char> is_dst(n, 0);
+    for (int d : D.by_name.at(to)) is_dst[d] = 1;
+    bool no_train = false; int origin_last = -1; long expanded = 0; int goal = -1;
+
+    using Q = pair<double, int>;   // {g + h, 상태}
+    priority_queue<Q, vector<Q>, greater<Q>> pq;
+    for (int s : D.by_name.at(from)) {
+        double hs = h(s);
+        if (hs >= 1e17) continue;   // 도착역에 닿을 수 없는 노드
+        L.key[2 * s] = 0; pq.push({hs, 2 * s});
+    }
+    while (!pq.empty()) {
+        int st = pq.top().second; pq.pop();
+        if (L.done[st]) continue;
+        L.done[st] = 1;
+        if (is_dst[st / 2]) { goal = st; break; }
+        expanded++;
+        for_each_move(D, L, st, day, depart_sec, no_train, origin_last, [&](const Move& m) {
+            if (L.done[m.to]) return;
+            double hv = h(m.to / 2);
+            if (hv >= 1e17) return;   // 도착역에 닿을 수 없는 노드
+            double ng = L.key[st] + ws * m.score + wr * m.real;
+            if (improve(L, st, m, ng)) pq.push({ng + hv, m.to});         // 우선순위 = g + h
+        });
+    }
+    Result r = goal >= 0 ? trace(L, goal, expanded) : not_found(no_train, origin_last, expanded);
     return by_real ? r : with_fallback(r, D, from, to, day, depart_sec);
 }
 
@@ -668,7 +723,7 @@ const string JSON_T = "application/json; charset=utf-8";
 // 화면과 /api/compare에서 고를 수 있는 알고리즘. 모두 (최단 시간 경로, 혼잡 반영 경로)를 같은 함수 모양으로 낸다
 struct Algo { const char* key; Result (*fn)(const Data&, const string&, const string&, int, int, bool); };
 const Algo ALGOS[] = {
-    {"dijkstra", route},              // main 브랜치(khxxn): 다익스트라
+    {"dijkstra", route_dijkstra},     // main 브랜치(khxxn): 다익스트라
     {"astar", route_astar},           // Susu 브랜치: A* (휴리스틱 = 랜드마크·직선거리 하한)
     {"ga", route_ga},                 // Susu 브랜치: 유전 알고리즘
 };

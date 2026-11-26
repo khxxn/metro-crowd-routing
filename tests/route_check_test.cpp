@@ -24,20 +24,20 @@ int main(int argc, char** argv) {
         {"개화", "중앙보훈병원", WEEKDAY, 64800, 97.3}, {"가양", "신논현", SAT, 45000, 45.0},
         {"노량진", "동작", WEEKDAY, 30600, 8.2}};
     for (auto& q : qs) {
-        Result r = route(D, q.a, q.b, q.day, q.t, false);
+        Result r = route_dijkstra(D, q.a, q.b, q.day, q.t, false);
         check(r.found && fabs(r.score / 60 - q.score) < 0.051, string(q.a) + "→" + q.b + " 점수");
     }
 
     // 2. 막차·첫차 (설명서 "심야·막차 질의")
-    check(route(D, "선릉", "수서", WEEKDAY, 1800, false).found, "선릉→수서 평일 00:30 탈 수 있음");
-    Result sat = route(D, "선릉", "수서", SAT, 1800, false);
+    check(route_dijkstra(D, "선릉", "수서", WEEKDAY, 1800, false).found, "선릉→수서 평일 00:30 탈 수 있음");
+    Result sat = route_dijkstra(D, "선릉", "수서", SAT, 1800, false);
     check(!sat.found && sat.no_train && sat.origin_last == 86310, "선릉→수서 토 00:30 막차 23:58");
-    check(route(D, "김포공항", "개화", SAT, 7 * 60, false).found, "김포공항→개화 토 24:07 탈 수 있음");
-    check(!route(D, "김포공항", "개화", SAT, 8 * 60, false).found, "김포공항→개화 토 24:08 막힘");
-    check(route(D, "송파나루", "중앙보훈병원", SAT, 0, false).found, "송파나루 24:00 이어 타기");
+    check(route_dijkstra(D, "김포공항", "개화", SAT, 7 * 60, false).found, "김포공항→개화 토 24:07 탈 수 있음");
+    check(!route_dijkstra(D, "김포공항", "개화", SAT, 8 * 60, false).found, "김포공항→개화 토 24:08 막힘");
+    check(route_dijkstra(D, "송파나루", "중앙보훈병원", SAT, 0, false).found, "송파나루 24:00 이어 타기");
 
     // 3. 노드당 기록 하나일 때 생기던 심야 버그: 최단 시간 경로가 2호선을 반대로 한 바퀴 돌던 경우
-    Result f = route(D, "아차산", "잠실새내", SUN, 23 * 3600 + 1800, true);
+    Result f = route_dijkstra(D, "아차산", "잠실새내", SUN, 23 * 3600 + 1800, true);
     check(f.found && f.real / 60 < 40, "아차산→잠실새내 일 23:30 최단 시간이 40분 미만");
 
     // 4. 무작위 질의: A* = 다익스트라(점수), 점수 경로가 있고 최단 시간 경로보다 빠르지 않음
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
         if (a == b) continue;
         int day = rng() % 3, t = times[rng() % 5];
         string tag = a + "→" + b + " day " + to_string(day) + " t " + to_string(t);
-        Result dr = route(D, a, b, day, t, true), dc = route(D, a, b, day, t, false);
+        Result dr = route_dijkstra(D, a, b, day, t, true), dc = route_dijkstra(D, a, b, day, t, false);
         Result ar = route_astar(D, a, b, day, t, true), ac = route_astar(D, a, b, day, t, false);
         check(dc.found == ac.found && (!dc.found || fabs(dc.score - ac.score) < 1e-6), "A* = 다익스트라(점수) " + tag);
         check(dr.found == ar.found && (!dr.found || fabs(dr.real - ar.real) < 1e-6), "A* = 다익스트라(시간) " + tag);
