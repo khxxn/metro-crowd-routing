@@ -12,6 +12,7 @@
 //   GET /api/graph                                   → 노선도 그리기용 역·구간 목록
 //   GET /api/route?from=교대&to=강동&day=weekday&time=18:00 → 최단 시간 경로(f)와 혼잡 반영 경로(c)
 //   algorithm=dijkstra(기본값), astar, ga로 탐색 알고리즘 선택
+//   GET /api/compare?from=..&to=..&day=..&time=.. → 세 알고리즘의 혼잡 반영 경로·점수·실행 시간 비교표
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -183,7 +184,7 @@ struct Data {
 
 inline double ride_cost(int seconds, double c) { return seconds * (1.0 + ALPHA * max(c - C0, 0.0)); }
 
-// ---------- 다익스트라 (route_cmp.cpp의 route()와 같은 로직 + 단계별 값 기록) ----------
+// ---------- 공통 결과 형식 ----------
 struct Step { int type; int from, to; double real, score, cong; };   // type 1 = 탑승, 0 = 환승
 struct Result {
     bool found = false;
@@ -193,155 +194,136 @@ struct Result {
     double score = 0, real = 0;
     vector<int> path;
     vector<Step> steps;
+    long expanded = 0;    // 우선순위 큐에서 꺼내 펼친 상태 수. 탐색량 비교용이며 GA는 세지 않는다
 };
 
-// by_real = true: 실제 소요시간 최소(일반 최단시간), false: 점수(혼잡 반영 비용) 최소. 시간 흐름 반영(방식 B).
-Result route(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
-    int n = (int)D.id.size();
-    vector<double> key(n, 1e18), real(n, 0), sco(n, 0), s_real(n, 0), s_score(n, 0), s_cong(n, 0);
-    vector<int> prev(n, -1);
-    vector<char> by_ride(n, 0), s_type(n, 0);
-    bool no_train = false; int origin_last = -1;
-    using P = pair<double, int>;
-    priority_queue<P, vector<P>, greater<P>> pq;
-    for (int s : D.by_name.at(from)) { key[s] = 0; pq.push({0, s}); }
+// ---------- 다익스트라 / A* 공통 탐색 (방식 B) ----------
+// 간선 가중치 = ws × 점수 + wr × 실제 시간. (1, 0) = 점수 최소, (0, 1) = 최단 시간.
+// 상태는 (역 노드, 열차를 탄 채로 왔나) 두 가지다. 같은 노드라도 환승해서 온 경우는 다음 열차의 막차·첫차를
+// 확인하고, 계속 타고 온 경우는 확인하지 않아서 갈 수 있는 곳이 다르다. 노드마다 기록을 하나만 두면
+// 심야에 "환승해서 온 더 빠른 기록"이 막차에 막혀 경로가 크게 돌아가는 문제가 있어 둘로 나눴다.
+// h를 넘기면 우선순위를 g + h로 쓰는 A*가 된다(h는 노드별 남은 가중치의 하한).
+Result search(const Data& D, const string& from, const string& to, int day, int depart_sec, double ws, double wr,
+              const vector<double>* h = nullptr) {
+    int n = (int)D.id.size(), S = 2 * n;   // 상태 번호 = 노드 * 2 + (탑승 중이면 1)
+    vector<double> key(S, 1e18), real(S, 0), sco(S, 0), s_real(S, 0), s_score(S, 0), s_cong(S, 0);
+    vector<int> prev(S, -1);
+    vector<char> s_type(S, 0), done(S, 0);
+    bool no_train = false; int origin_last = -1; long expanded = 0;
+    auto H = [&](int node) { return h ? (*h)[node] : 0.0; };
+    using Q = pair<double, int>;   // {g + h, 상태}
+    priority_queue<Q, vector<Q>, greater<Q>> pq;
+    for (int s : D.by_name.at(from)) {
+        if (H(s) >= 1e17) continue;   // 도착역에 닿을 수 없는 노드
+        key[2 * s] = 0; pq.push({H(s), 2 * s});
+    }
     vector<char> is_dst(n, 0);
     for (int d : D.by_name.at(to)) is_dst[d] = 1;
 
     while (!pq.empty()) {
-        auto [d, u] = pq.top(); pq.pop();
-        if (d > key[u]) continue;
+        int st = pq.top().second; pq.pop();
+        if (done[st]) continue;
+        done[st] = 1;
+        int u = st / 2; bool aboard = st & 1; double g = key[st];
         if (is_dst[u]) {
-            Result r; r.found = true; r.score = sco[u]; r.real = real[u];
-            for (int x = u; x != -1; x = prev[x]) r.path.push_back(x);
-            reverse(r.path.begin(), r.path.end());
-            for (size_t i = 1; i < r.path.size(); i++) {
-                int x = r.path[i];
-                r.steps.push_back({s_type[x], r.path[i - 1], x, s_real[x], s_score[x], s_cong[x]});
+            Result r; r.found = true; r.score = sco[st]; r.real = real[st]; r.expanded = expanded;
+            vector<int> chain;
+            for (int x = st; x != -1; x = prev[x]) chain.push_back(x);
+            reverse(chain.begin(), chain.end());
+            for (size_t i = 0; i < chain.size(); i++) {
+                int x = chain[i];
+                r.path.push_back(x / 2);
+                if (i) r.steps.push_back({s_type[x], chain[i - 1] / 2, x / 2, s_real[x], s_score[x], s_cong[x]});
             }
             return r;
         }
-        int now = depart_sec + (int)real[u];
+        expanded++;
+        int now = depart_sec + (int)real[st];   // 이 노드에 도착한(타려는) 시각
         int slot = slot_of(now);
+        auto relax = [&](int ns, double dr, double ds, int type, double c) {
+            if (done[ns]) return;
+            double hv = H(ns / 2);
+            if (hv >= 1e17) return;
+            double ng = g + ws * ds + wr * dr;
+            if (ng < key[ns]) {
+                key[ns] = ng; real[ns] = real[st] + dr; sco[ns] = sco[st] + ds; prev[ns] = st;
+                s_type[ns] = type; s_real[ns] = dr; s_score[ns] = ds; s_cong[ns] = c;
+                pq.push({ng + hv, ns});
+            }
+        };
         for (const auto& e : D.ride[u]) {
-            if (!by_ride[u]) {
+            if (!aboard) {   // 새로 타는 열차만 첫차·막차를 확인한다
                 int t = clock_of(now);
                 if (t < e.first[day] || t > e.last[day]) {
                     no_train = true;
-                    if (key[u] == 0 && t > e.last[day]) origin_last = max(origin_last, e.last[day]);
+                    if (prev[st] < 0 && t > e.last[day]) origin_last = max(origin_last, e.last[day]);
                     continue;
                 }
             }
             double c = D.cong[e.e][day][slot];
-            double ds = ride_cost(e.sec, c), dr = e.sec;
-            double w = by_real ? dr : ds;
-            if (d + w < key[e.to]) {
-                key[e.to] = d + w; real[e.to] = real[u] + dr; sco[e.to] = sco[u] + ds; prev[e.to] = u; by_ride[e.to] = 1;
-                s_type[e.to] = 1; s_real[e.to] = dr; s_score[e.to] = ds; s_cong[e.to] = c;
-                pq.push({key[e.to], e.to});
-            }
+            relax(2 * e.to + 1, e.sec, ride_cost(e.sec, c), 1, c);
         }
         for (const auto& e : D.tr[u]) {
             const TrVal& v = D.trv[e.e][day][slot];
-            if (!v.ok) { no_train = true; continue; }
-            double ds = v.cost, dr = v.walk + v.wait;
-            double w = by_real ? dr : ds;
-            if (d + w < key[e.to]) {
-                key[e.to] = d + w; real[e.to] = real[u] + dr; sco[e.to] = sco[u] + ds; prev[e.to] = u; by_ride[e.to] = 0;
-                s_type[e.to] = 0; s_real[e.to] = dr; s_score[e.to] = ds; s_cong[e.to] = 0;
-                pq.push({key[e.to], e.to});
-            }
+            if (!v.ok) { no_train = true; continue; }   // NO_SERVICE: 그 시간대에는 갈아탈 수 없다
+            relax(2 * e.to, v.walk + v.wait, v.cost, 0, 0);
         }
     }
-    Result none; none.no_train = no_train; none.origin_last = origin_last;
+    Result none; none.no_train = no_train; none.origin_last = origin_last; none.expanded = expanded;
     return none;
 }
 
-// ---------- A* (기존 route()와 같은 입력·비용식·결과 형식) ----------
-// h: 혼잡 가산·운행 제한을 제외한 이동시간 + 해당 요일의 최소 환승 비용.
-// 역방향 그래프에서 목적지까지의 하한을 구해, 남은 비용을 과대평가하지 않는다.
-// 기존 route()처럼 역마다 후보 하나를 유지하므로 시간 의존 비용의 최적성 한계도 같다.
-Result route_astar(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
+// 방식 B에서 상태마다 기록을 하나만 두기 때문에, 아주 드물게(심야의 긴 이동) 점수가 낮은 기록이 막차에 막혀
+// 점수 최소 탐색이 경로를 못 찾는 경우가 있다. 그때는 실제로 갈 수 있는 최단 시간 경로를 대신 돌려준다.
+Result with_fallback(Result r, const Data& D, const string& from, const string& to, int day, int depart_sec) {
+    if (r.found) return r;
+    Result fast = search(D, from, to, day, depart_sec, 0, 1);
+    if (!fast.found) return r;
+    fast.expanded += r.expanded;
+    return fast;
+}
+
+// by_real = true: 실제 소요시간 최소(일반 최단시간), false: 점수(혼잡 반영 비용) 최소.
+Result route(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
+    if (by_real) return search(D, from, to, day, depart_sec, 0, 1);
+    return with_fallback(search(D, from, to, day, depart_sec, 1, 0), D, from, to, day, depart_sec);
+}
+
+// ---------- A* ----------
+// h: 혼잡 가산·운행 제한을 빼고 본 남은 가중치의 하한. 도착역 노드들에서 역방향 다익스트라로 미리 구한다.
+//   탑승 간선의 하한 = seconds (점수 = seconds × 혼잡 배율 ≥ seconds)
+//   환승 간선의 하한 = 그 요일 전 시간대(NO_SERVICE 제외)에서 가장 작은 값
+// 모든 간선에서 실제 가중치 ≥ 하한이라 남은 비용을 과대평가하지 않는다(admissible). 다익스트라와 같은 상태·방식 B를 쓴다.
+vector<double> lower_bound_to(const Data& D, const string& to, int day, double ws, double wr) {
     int n = (int)D.id.size();
     using P = pair<double, int>;
-    vector<vector<P>> reverse_edges(n);  // {비용 하한, 이전 역}
+    vector<vector<P>> reverse_edges(n);   // {하한, 이전 역}
     for (int u = 0; u < n; u++) {
-        for (const auto& e : D.ride[u]) reverse_edges[e.to].push_back({(double)e.sec, u});
+        for (const auto& e : D.ride[u]) reverse_edges[e.to].push_back({(ws + wr) * e.sec, u});
         for (const auto& e : D.tr[u]) {
             double lower = 1e18;
             for (const TrVal& v : D.trv[e.e][day])
-                if (v.ok) lower = min(lower, by_real ? v.walk + v.wait : v.cost);
+                if (v.ok) lower = min(lower, ws * v.cost + wr * (v.walk + v.wait));
             if (lower < 1e18) reverse_edges[e.to].push_back({lower, u});
         }
     }
-
     vector<double> h(n, 1e18);
-    vector<char> is_dst(n, 0);
-    priority_queue<P, vector<P>, greater<P>> hpq;
-    for (int d : D.by_name.at(to)) { is_dst[d] = 1; h[d] = 0; hpq.push({0, d}); }
-    while (!hpq.empty()) {
-        auto [d, u] = hpq.top(); hpq.pop();
-        if (d > h[u]) continue;
-        for (const auto& [w, v] : reverse_edges[u]) {
-            if (d + w < h[v]) { h[v] = d + w; hpq.push({h[v], v}); }
-        }
-    }
-
-    vector<double> key(n, 1e18), real(n, 0), sco(n, 0), s_real(n, 0), s_score(n, 0), s_cong(n, 0);
-    vector<int> prev(n, -1);
-    vector<char> by_ride(n, 0), s_type(n, 0);
-    bool no_train = false; int origin_last = -1;
-    using Q = pair<double, P>;  // {g + h, {g, 역}}; 실제 누적 비용 g로 오래된 항목을 검사한다.
-    priority_queue<Q, vector<Q>, greater<Q>> pq;
-    for (int s : D.by_name.at(from)) { key[s] = 0; pq.push({h[s], {0, s}}); }
-
+    priority_queue<P, vector<P>, greater<P>> pq;
+    for (int d : D.by_name.at(to)) { h[d] = 0; pq.push({0, d}); }
     while (!pq.empty()) {
-        auto [d, u] = pq.top().second; pq.pop();
-        if (d > key[u]) continue;
-        if (is_dst[u]) {
-            Result r; r.found = true; r.score = sco[u]; r.real = real[u];
-            for (int x = u; x != -1; x = prev[x]) r.path.push_back(x);
-            reverse(r.path.begin(), r.path.end());
-            for (size_t i = 1; i < r.path.size(); i++) {
-                int x = r.path[i];
-                r.steps.push_back({s_type[x], r.path[i - 1], x, s_real[x], s_score[x], s_cong[x]});
-            }
-            return r;
-        }
-        int now = depart_sec + (int)real[u];
-        int slot = slot_of(now);
-        for (const auto& e : D.ride[u]) {
-            if (!by_ride[u]) {
-                int t = clock_of(now);
-                if (t < e.first[day] || t > e.last[day]) {
-                    no_train = true;
-                    if (key[u] == 0 && t > e.last[day]) origin_last = max(origin_last, e.last[day]);
-                    continue;
-                }
-            }
-            double c = D.cong[e.e][day][slot];
-            double ds = ride_cost(e.sec, c), dr = e.sec;
-            double w = by_real ? dr : ds;
-            if (d + w < key[e.to]) {
-                key[e.to] = d + w; real[e.to] = real[u] + dr; sco[e.to] = sco[u] + ds; prev[e.to] = u; by_ride[e.to] = 1;
-                s_type[e.to] = 1; s_real[e.to] = dr; s_score[e.to] = ds; s_cong[e.to] = c;
-                pq.push({key[e.to] + h[e.to], {key[e.to], e.to}});
-            }
-        }
-        for (const auto& e : D.tr[u]) {
-            const TrVal& v = D.trv[e.e][day][slot];
-            if (!v.ok) { no_train = true; continue; }
-            double ds = v.cost, dr = v.walk + v.wait;
-            double w = by_real ? dr : ds;
-            if (d + w < key[e.to]) {
-                key[e.to] = d + w; real[e.to] = real[u] + dr; sco[e.to] = sco[u] + ds; prev[e.to] = u; by_ride[e.to] = 0;
-                s_type[e.to] = 0; s_real[e.to] = dr; s_score[e.to] = ds; s_cong[e.to] = 0;
-                pq.push({key[e.to] + h[e.to], {key[e.to], e.to}});
-            }
-        }
+        auto [d, u] = pq.top(); pq.pop();
+        if (d > h[u]) continue;
+        for (const auto& [w, v] : reverse_edges[u])
+            if (d + w < h[v]) { h[v] = d + w; pq.push({h[v], v}); }
     }
-    Result none; none.no_train = no_train; none.origin_last = origin_last;
-    return none;
+    return h;
+}
+
+Result route_astar(const Data& D, const string& from, const string& to, int day, int depart_sec, bool by_real) {
+    double ws = by_real ? 0 : 1, wr = by_real ? 1 : 0;
+    vector<double> h = lower_bound_to(D, to, day, ws, wr);
+    Result r = search(D, from, to, day, depart_sec, ws, wr, &h);
+    return by_real ? r : with_fallback(r, D, from, to, day, depart_sec);
 }
 
 // ---------- GA (경로를 염색체로 사용하는 유전 알고리즘) ----------
@@ -585,6 +567,14 @@ string response(int code, const char* msg, const string& ctype, const string& bo
 }
 const string JSON_T = "application/json; charset=utf-8";
 
+// 화면과 /api/compare에서 고를 수 있는 알고리즘. 모두 (최단 시간 경로, 혼잡 반영 경로)를 같은 함수 모양으로 낸다
+struct Algo { const char* key; Result (*fn)(const Data&, const string&, const string&, int, int, bool); };
+const Algo ALGOS[] = {
+    {"dijkstra", route},              // main 브랜치(khxxn): 다익스트라
+    {"astar", route_astar},           // Susu 브랜치: A*
+    {"ga", route_ga},                 // Susu 브랜치: 유전 알고리즘
+};
+
 struct App { Data D; string page_path; string graph_json; };
 
 string handle(const App& A, const string& req, string& log) {
@@ -606,7 +596,7 @@ string handle(const App& A, const string& req, string& log) {
     }
     if (path == "/healthz") return response(200, "OK", "text/plain; charset=utf-8", "ok", head);   // 배포 서비스의 상태 확인용
     if (path == "/api/graph") return response(200, "OK", JSON_T, A.graph_json, head);
-    if (path == "/api/route") {
+    if (path == "/api/route" || path == "/api/compare") {
         auto q = parse_query(query);
         auto bad = [&](const string& why) { return response(400, "Bad Request", JSON_T, "{\"ok\":false,\"error\":" + jstr(why) + "}", head); };
         if (!q.count("from") || !q.count("to") || !q.count("day") || !q.count("time")) return bad("from, to, day, time이 필요합니다");
@@ -617,11 +607,33 @@ string handle(const App& A, const string& req, string& log) {
         if (ts.size() != 5 || ts[2] != ':' || !isdigit((unsigned char)ts[0]) || !isdigit((unsigned char)ts[1]) || !isdigit((unsigned char)ts[3]) || !isdigit((unsigned char)ts[4])) return bad("time은 HH:MM 형식");
         int hh = stoi(ts.substr(0, 2)), mm = stoi(ts.substr(3, 2));
         if (hh > 23 || mm > 59) return bad("time 범위 오류");
-        const string algorithm = q.count("algorithm") ? q["algorithm"] : "dijkstra";
-        if (algorithm != "dijkstra" && algorithm != "astar" && algorithm != "ga") return bad("algorithm은 dijkstra, astar, ga 중 하나");
-        auto run_route = algorithm == "ga" ? route_ga : algorithm == "astar" ? route_astar : route;
         int day = day_of(ds), t = hh * 3600 + mm * 60;
-        Result f = run_route(A.D, from, to, day, t, true), c = run_route(A.D, from, to, day, t, false);
+
+        if (path == "/api/compare") {   // 세 알고리즘으로 혼잡 반영 경로를 구해 한 표로 비교한다
+            string rows;
+            for (const auto& a : ALGOS) {
+                // 실행 시간은 혼잡 반영 경로를 한 번 구하는 데 걸린 시간. 3번 재서 가운데 값을 쓴다
+                double ms[3]; Result r;
+                for (int k = 0; k < 3; k++) {
+                    auto t0 = chrono::steady_clock::now();
+                    r = a.fn(A.D, from, to, day, t, false);
+                    ms[k] = chrono::duration<double, milli>(chrono::steady_clock::now() - t0).count();
+                }
+                sort(ms, ms + 3);
+                rows += string(rows.empty() ? "" : ",") + "{\"algorithm\":" + jstr(a.key) + ",\"found\":" + (r.found ? "true" : "false") +
+                        ",\"score\":" + jnum(r.score) + ",\"real\":" + jnum(r.real) + ",\"ms\":" + jnum(ms[1]) +
+                        ",\"expanded\":" + to_string(r.expanded) + ",\"path\":[";
+                for (size_t i = 0; i < r.path.size(); i++) rows += (i ? "," : "") + to_string(r.path[i]);
+                rows += "]}";
+            }
+            return response(200, "OK", JSON_T, "{\"ok\":true,\"rows\":[" + rows + "]}", head);
+        }
+
+        const string algorithm = q.count("algorithm") ? q["algorithm"] : "dijkstra";
+        const Algo* algo = nullptr;
+        for (const auto& a : ALGOS) if (algorithm == a.key) algo = &a;
+        if (!algo) return bad("algorithm은 dijkstra, astar, ga 중 하나");
+        Result f = algo->fn(A.D, from, to, day, t, true), c = algo->fn(A.D, from, to, day, t, false);
         string body;
         if (!f.found || !c.found) {
             const Result& x = c.found ? f : c;
